@@ -1,0 +1,25 @@
+# --- Runtime state (personal data stays local, never committed) ---
+server/history.json
+server/state.json
+downloads/
+*.log
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.env
+.python-version
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# --- Node (if ever used for tooling) ---
+node_modules/

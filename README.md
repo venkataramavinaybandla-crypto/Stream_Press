@@ -1,0 +1,63 @@
+# STREAM PRESS
+
+**A local, personal-use, universal media downloader** — paste a link, pick a format, save the file. Runs entirely on your machine: no accounts, no telemetry, no cloud.
+
+Reads **1,000+ sources** (via yt-dlp): YouTube, Instagram, X/Twitter, Facebook, TikTok, Snapchat Spotlight, Pinterest, Reddit, Vimeo, Twitch, Dailymotion, and countless others. DRM-protected streams (Netflix, Prime Video) and login-walled content cannot be saved.
+
+> Strictly a **personal, non-commercial** utility for private offline viewing, research and archival under Fair Use. Re-distribution of copyrighted material is the responsibility of the end user.
+
+---
+
+## ✨ Features
+
+- **Universal links** — paste any video URL; the source is auto-detected and shown in the results.
+- **Format picker** — per-resolution video rows plus audio-only extracts (MP3 / M4A / WAV / FLAC).
+- **Straight to your Downloads** — finished files land in your PC's real **Downloads folder** (never inside the repo), with an **Open Folder** button on completion.
+- **Dark mode** — warm paper by default, "night ink" at the tap of a button.
+- **Incognito mode** — downloads leave no history and don't touch your streak.
+- **Daily streak** — consecutive-day download counter with a lifetime best.
+- **Local-first privacy** — binds to `127.0.0.1` only, zero telemetry, settings stored on-device.
+
+## 🚀 Quick start
+
+Requires **Python 3.9+**.
+
+```bash
+# 1. Install dependencies
+pip install -r server/requirements.txt
+
+# 2. Run it
+python run.py
+```
+
+The launcher verifies FFmpeg, prints where files will be saved, and opens the web UI at `http://127.0.0.1:8000`.
+
+Optional env vars:
+
+| Var | Effect |
+|---|---|
+| `YTMAX_DOWNLOAD_DIR` | Custom folder for finished downloads (default: your OS Downloads folder) |
+| `YTMAX_WORKERS` | Parallel download workers (default `2`) |
+| `YTMAX_TASK_CAP` | Max remembered tasks (default `60`) |
+
+## 🧠 How it works
+
+- **Frontend** — plain HTML/CSS/JS (no build step). A print-shop "press" UI: paste a link on the Order Slip → the Press Column renders a release sheet with format ledger rows → pick a run.
+- **Backend** — FastAPI + **yt-dlp** (1,700+ extractors) + FFmpeg for merging and embedding. Downloads are staged in a temp directory, then **moved into your Downloads folder** when complete. History, streak and settings are stored in `server/` JSON files that are git-ignored.
+- **Save flow** — the file is already in your Downloads; the UI can open the folder for you, or "Save a copy" to re-download it through the browser.
+
+## ☁️ Deployment notes (important)
+
+This app **cannot run on Vercel** (or any serverless platform). Downloading media needs a long-running process with **persistent disk, FFmpeg, and outbound network** — serverless functions have none of these. Options:
+
+- **Keep it local** (recommended) — `python run.py` on your own machine. This is the intended use.
+- **A small VPS / VDS or a persistent PaaS** (Railway, Render, Fly.io, a $5 VPS) if you want to reach it from other devices — expose it with auth in front, because it can fetch arbitrary URLs and write files.
+- The repo itself is a normal Python project and hosts cleanly on GitHub as-is.
+
+## 🧱 Project layout
+
+```
+client/          # frontend (index.html, style.css, app.js) — no build step
+server/          # FastAPI backend + yt-dlp download engine
+run.py           # launcher (deps check, FFmpeg verify, browser open)
+```

@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>STREAM PRESS — Universal Personal-Use Media Engine</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Archivo:ital,wght@0,400;0,500;0,600;0,700;0,800;0,900;1,400;1,600&family=Instrument+Serif:ital@0;1&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Print registration marks (fixed page corners) -->
+    <span class="reg-mark reg-tl" aria-hidden="true"></span>
+    <span class="reg-mark reg-tr" aria-hidden="true"></span>
+    <span class="reg-mark reg-bl" aria-hidden="true"></span>
+    <span class="reg-mark reg-br" aria-hidden="true"></span>
+
+    <div class="sheet">
+
+        <!-- ======================= MASTHEAD ======================= -->
+        <header class="masthead">
+            <div class="masthead-id">
+                <div class="issue-tag mono">UNIVERSAL STREAM PRESS &nbsp;·&nbsp; LOCAL EDITION &nbsp;·&nbsp; Nº 0001</div>
+                <h1 class="wordmark">STREAM<span class="wm-accent">PRESS</span></h1>
+                <p class="edition-line">
+                    <em class="serif-italic">The universal, personal-use media engine</em>
+                    <span class="mono edition-meta">printed on this machine &nbsp;·&nbsp; 1,000+ sources &nbsp;·&nbsp; fair use only</span>
+                </p>
+            </div>
+            <div class="masthead-side">
+                <div class="barcode mono" aria-hidden="true">
+                    <span class="bc-bars"></span>
+                    <span class="bc-text">STREAM-PRESS·LOCAL·PRIVATE</span>
+                </div>
+                <div class="masthead-actions">
+                    <button type="button" id="themeBtn" class="stamp-btn stamp-btn-ink" title="Toggle night-ink mode">
+                        <i class="fa-solid fa-moon"></i> DARK
+                    </button>
+                    <label class="incognito-toggle" title="Incognito: downloads leave no history and don't touch your streak">
+                        <span class="mono incognito-label"><i class="fa-solid fa-user-secret"></i> INCOGNITO</span>
+                        <input type="checkbox" id="incognitoToggle">
+                        <span class="slider-switch"></span>
+                    </label>
+                    <button type="button" id="legalDisclaimerBtn" class="stamp-btn" title="Personal &amp; Fair Use agreement">
+                        <i class="fa-solid fa-scale-balanced"></i> FAIR USE LICENSE
+                    </button>
+                    <button type="button" id="settingsBtn" class="stamp-btn stamp-btn-ink" title="Machine settings">
+                        <i class="fa-solid fa-sliders"></i> MACHINE SETTINGS
+                    </button>
+                </div>
+                <div class="masthead-meters">
+                    <div class="status-stamp status-pill" id="serverStatus" title="Local engine status">
+                        <span class="stamp-dot" id="statusDot"></span>
+                        <span id="statusText">connecting…</span>
+                    </div>
+                    <div class="streak-stamp" id="streakStamp" title="Consecutive days with a download">
+                        <i class="fa-solid fa-fire"></i>
+                        <span class="streak-count mono" id="streakText">NO STREAK</span>
+                        <span class="streak-best mono" id="streakBest">BEST —</span>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Colour control strip -->
+        <div class="test-strip" aria-hidden="true">
+            <span class="ts ts-c" title="Cyan"></span>
+            <span class="ts ts-m" title="Magenta"></span>
+            <span class="ts ts-y" title="Yellow"></span>
+            <span class="ts ts-k" title="Key / Black"></span>
+            <span class="ts ts-r" title="Spot Scarlet"></span>
+            <span class="ts ts-b" title="Spot Ultramarine"></span>
+            <span class="strip-caption mono">COLOUR CONTROL STRIP — C · M · Y · K · R · B</span>
+        </div>
+
+        <!-- ======================= THE DESK ======================= -->
+        <div class="desk">
+
+            <!-- ===== ORDER SLIP (left rail) ===== -->
+            <aside class="order-slip panel-crops" aria-label="Download order form">
+                <div class="slip-top">
+                    <div class="slip-head">
+                        <span class="slip-no mono">ORDER Nº 001</span>
+                        <span class="slip-reg mono">REC·SLIP</span>
+                    </div>
+                    <div class="halftone-band" aria-hidden="true"></div>
+                    <h2 class="slip-title">Send any <span class="serif-italic">stream</span> to the press</h2>
+                    <p class="slip-sub mono">PASTE A LINK FROM YOUTUBE, INSTAGRAM, X, FACEBOOK, TIKTOK &amp; 1,000+ MORE</p>
+                </div>
+
+                <label class="field-label mono" for="urlInput">01 · VIDEO ADDRESS — 1,000+ SOURCES</label>
+                <div class="url-console">
+                    <i class="fa-solid fa-link console-yt" aria-hidden="true"></i>
+                    <input type="text" id="urlInput" placeholder="https:// — YouTube, Instagram, X, TikTok, Facebook…" autocomplete="off" spellcheck="false">
+                    <div class="console-actions">
+                        <button type="button" id="copyBtn" class="mini-btn hidden" title="Copy link"><i class="fa-solid fa-link"></i></button>
+                        <button type="button" id="pasteBtn" class="mini-btn" title="Paste from clipboard"><i class="fa-solid fa-paste"></i></button>
+                        <button type="button" id="clearBtn" class="mini-btn hidden" title="Clear input"><i class="fa-solid fa-xmark"></i></button>
+                    </div>
+                </div>
+
+                <div id="errorMessage" class="error-stamp hidden">
+                    <i class="fa-solid fa-triangle-exclamation"></i>
+                    <span id="errorText">Invalid YouTube link format</span>
+                </div>
+
+                <button type="button" id="analyzeBtn" class="press-btn">
+                    <span class="press-btn-left"><i class="fa-solid fa-gear"></i> <span class="btn-text">SEND TO PRESS</span></span>
+                    <i class="fa-solid fa-arrow-right-long press-btn-arrow" aria-hidden="true"></i>
+                </button>
+
+                <div class="samples-block">
+                    <span class="field-label mono"><i class="fa-solid fa-fire"></i> 02 · SAMPLE CATALOGUE</span>
+                    <div class="sample-row">
+                        <button class="sample-chip" data-url="https://www.youtube.com/watch?v=LXb3EKWsInQ">YT · 4K</button>
+                        <button class="sample-chip" data-url="https://www.youtube.com/watch?v=jNQXAC9IVRw">YT · SHORT</button>
+                        <button class="sample-chip" data-url="https://www.youtube.com/shorts/32WkL299mUQ">YT · SHORTS</button>
+                        <button class="sample-chip" data-focus>ANY LINK →</button>
+                    </div>
+                </div>
+
+                <div class="supported-strip">
+                    <span class="field-label mono"><i class="fa-solid fa-circle-check"></i> 03 · SUPPORTED PRESS SOURCES</span>
+                    <div class="source-tags mono">
+                        <span>YOUTUBE</span><span>INSTAGRAM</span><span>X / TWITTER</span><span>FACEBOOK</span><span>TIKTOK</span><span>SNAPCHAT</span><span>PINTEREST</span><span>REDDIT</span><span>VIMEO</span><span>TWITCH</span><span>DAILYMOTION</span><span>+1,000 MORE</span>
+                    </div>
+                </div>
+
+                <div class="license-stamp">
+                    <span class="stamp-inner mono">
+                        <i class="fa-solid fa-shield-halved"></i> PERSONAL NON-COMMERCIAL UTILITY — STRICTLY PRIVATE, RESEARCH &amp; FAIR USE
+                    </span>
+                    <button type="button" id="readTermsBtn" class="stamp-btn stamp-btn-red">READ LEGAL TERMS</button>
+                </div>
+
+                <p class="fineprint mono">DRM-PROTECTED STREAMS (NETFLIX, PRIME VIDEO) &amp; LOGIN-WALLED CONTENT CANNOT BE SAVED. MOST SOCIAL &amp; OPEN-WEB VIDEOS WORK.</p>
+
+                <div class="perforation" aria-hidden="true"></div>
+            </aside>
+
+            <!-- ===== PRESS COLUMN (right) ===== -->
+            <main class="press-col">
+
+                <!-- Loading -->
+                <section id="loadingSection" class="loading-panel panel-crops hidden">
+                    <div class="loader-head">
+                        <span class="sheet-no mono">Nº 02</span>
+                        <h3 class="display-title">The press is rolling…</h3>
+                    </div>
+                    <p class="mono loader-sub">SCANNING STREAMS · 60FPS · HDR · ORIGINAL AUDIO</p>
+                    <div class="roller-track" aria-hidden="true">
+                        <div class="roller-bar"></div>
+                    </div>
+                    <div class="halftone-band" aria-hidden="true"></div>
+                </section>
+
+                <!-- Results -->
+                <section id="resultSection" class="result-panel panel-crops hidden">
+                    <div class="sheet-head">
+                        <span class="sheet-no mono">Nº 02</span>
+                        <div class="sheet-head-text">
+                            <h2 class="display-title">Stream selector</h2>
+                            <span class="mono sheet-sub">RELEASE SHEET — PICK YOUR PRESS RUN</span>
+                        </div>
+                    </div>
+
+                    <div class="release-sheet">
+                        <div class="thumb-wrap">
+                            <img id="videoThumb" src="" alt="Video thumbnail">
+                            <span class="thumb-frame" aria-hidden="true"></span>
+                            <div class="thumb-stamps">
+                                <span id="durationBadge" class="thumb-stamp mono"><i class="fa-regular fa-clock"></i> 00:00</span>
+                                <span id="maxResBadge" class="thumb-stamp thumb-stamp-red mono"><i class="fa-solid fa-crown"></i> 4K UHD</span>
+                            </div>
+                        </div>
+                        <div class="release-info">
+                            <div class="channel-line mono">
+                                <i class="fa-solid fa-circle-check"></i> <span id="uploaderText">Channel Name</span>
+                                <span id="sourceBadge" class="source-stamp mono"><i class="fa-solid fa-globe"></i> SOURCE: —</span>
+                            </div>
+                            <h3 id="videoTitle" class="release-title">Video Title Here</h3>
+                            <div class="release-meta mono">
+                                <span><i class="fa-regular fa-eye"></i> <span id="viewsText">0</span> VIEWS</span>
+                                <span id="maxResTag" class="high-res-pill"><i class="fa-solid fa-sparkles"></i> HIGHEST: 2160p60 (4K)</span>
+                            </div>
+                            <div class="quick-dl-box">
+                                <label class="print-check">
+                                    <input type="checkbox" id="complianceCheck" checked>
+                                    <span class="check-box"></span>
+                                    <span class="check-text mono">I CONFIRM THIS IS FOR PERSONAL OFFLINE VIEWING UNDER FAIR USE</span>
+                                </label>
+                                <button id="quickDownloadBtn" class="hero-btn">
+                                    <span class="hero-btn-inner">
+                                        <span class="hero-title"><i class="fa-solid fa-download"></i> DOWNLOAD HIGHEST QUALITY</span>
+                                        <span class="hero-sub mono" id="quickDlSubtitle">Auto-selects best stream + original audio</span>
+                                    </span>
+                                    <i class="fa-solid fa-arrow-right hero-arrow" aria-hidden="true"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="formats-container">
+                        <div class="tabs-head">
+                            <button class="tab-btn active" data-tab="video-tab">
+                                <span class="tab-no mono">A</span> VIDEO + AUDIO (MERGED)
+                            </button>
+                            <button class="tab-btn" data-tab="audio-tab">
+                                <span class="tab-no mono">B</span> AUDIO ONLY (MP3 / M4A / FLAC)
+                            </button>
+                        </div>
+
+                        <div id="video-tab" class="tab-content active">
+                            <div class="format-grid" id="videoFormatGrid"></div>
+                        </div>
+
+                        <div id="audio-tab" class="tab-content">
+                            <p class="tab-note mono"><i class="fa-solid fa-circle-info"></i> AUDIO IS EXTRACTED FROM SOURCE — TAGS &amp; COVER ART EMBEDDED WHEN ENABLED</p>
+                            <div class="format-grid" id="audioFormatGrid"></div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Archive -->
+                <section class="archive-panel panel-crops">
+                    <div class="sheet-head archive-head">
+                        <span class="sheet-no mono">Nº 03</span>
+                        <div class="sheet-head-text">
+                            <h2 class="display-title"><i class="fa-solid fa-folder-open"></i> The archive</h2>
+                            <span class="mono sheet-sub">DOWNLOAD LEDGER — RECENT FILES</span>
+                        </div>
+                        <div class="archive-actions">
+                            <button type="button" id="refreshHistoryBtn" class="mini-btn" title="Refresh ledger"><i class="fa-solid fa-arrows-rotate"></i></button>
+                            <button type="button" id="clearHistoryBtn" class="mini-btn" title="Clear ledger"><i class="fa-solid fa-trash-can"></i></button>
+                        </div>
+                    </div>
+                    <div id="historyList" class="history-list">
+                        <div class="empty-history">
+                            <i class="fa-solid fa-folder-open"></i>
+                            <p>No recent downloads yet. Send a link to the press above!</p>
+                        </div>
+                    </div>
+                </section>
+
+            </main>
+        </div>
+    </div>
+
+    <!-- ======================= FOOTER ======================= -->
+    <footer class="app-footer">
+        <span class="foot-stamp mono"><i class="fa-solid fa-server"></i> <span id="footerStatus">Local engine: connecting…</span></span>
+        <span class="foot-sep mono">|</span>
+        <span class="foot-stamp mono"><i class="fa-solid fa-database"></i> <span id="footerStats">0 files · 0 MB saved</span></span>
+        <span class="foot-sep mono">|</span>
+        <span class="foot-stamp mono"><i class="fa-solid fa-lock"></i> LOCAL · PRIVATE · NO TELEMETRY</span>
+    </footer>
+
+    <!-- ======================= MACHINE SETTINGS DRAWER ======================= -->
+    <div id="settingsDrawer" class="drawer-overlay hidden">
+        <aside class="settings-drawer panel-crops">
+            <div class="drawer-head">
+                <div>
+                    <span class="sheet-no mono">SETUP</span>
+                    <h3 class="display-title"><i class="fa-solid fa-sliders"></i> Machine settings</h3>
+                </div>
+                <button type="button" id="closeSettingsBtn" class="mini-btn" title="Close settings"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <p class="mono drawer-sub">TUNE ENGINE PARAMETERS — APPLIES INSTANTLY ON THIS DEVICE</p>
+
+            <div class="setting-group">
+                <label class="setting-label" for="concurrencySlider">
+                    Parallel stream fragments
+                    <span id="concurrencyValue" class="setting-value mono">4</span>
+                </label>
+                <input type="range" id="concurrencySlider" min="1" max="8" step="1" value="4">
+                <p class="setting-hint mono">HIGHER COUNTS SPEED UP LARGE STREAM MERGING</p>
+            </div>
+
+            <div class="setting-group">
+                <label class="setting-label" for="rateLimitSelect">Speed throttle</label>
+                <select id="rateLimitSelect">
+                    <option value="">Unlimited (maximum)</option>
+                    <option value="2">2 MB/s — low impact</option>
+                    <option value="5">5 MB/s — balanced</option>
+                    <option value="10">10 MB/s — fast</option>
+                    <option value="20">20 MB/s — extreme</option>
+                </select>
+                <p class="setting-hint mono">LIMITS BACKGROUND NETWORK BANDWIDTH USAGE</p>
+            </div>
+
+            <div class="setting-group toggle-row">
+                <div>
+                    <label class="setting-label" for="embedMetadataToggle">Embed metadata tags</label>
+                    <p class="setting-hint mono">INJECT TITLE, CHANNEL &amp; YEAR METADATA</p>
+                </div>
+                <label class="switch">
+                    <input type="checkbox" id="embedMetadataToggle" checked>
+                    <span class="slider-switch"></span>
+                </label>
+            </div>
+
+            <div class="setting-group toggle-row">
+                <div>
+                    <label class="setting-label" for="embedThumbToggle">Embed audio cover art</label>
+                    <p class="setting-hint mono">ATTACH YOUTUBE THUMBNAIL AS MP3 ARTWORK</p>
+                </div>
+                <label class="switch">
+                    <input type="checkbox" id="embedThumbToggle" checked>
+                    <span class="slider-switch"></span>
+                </label>
+            </div>
+
+            <div class="setting-group toggle-row">
+                <div>
+                    <label class="setting-label" for="autoSaveToggle">Auto-open folder on finish</label>
+                    <p class="setting-hint mono">OPENS YOUR DOWNLOADS FOLDER WHEN A DOWNLOAD COMPLETES</p>
+                </div>
+                <label class="switch">
+                    <input type="checkbox" id="autoSaveToggle" checked>
+                    <span class="slider-switch"></span>
+                </label>
+            </div>
+
+            <div class="setting-group">
+                <button type="button" id="resetSettingsBtn" class="stamp-btn">
+                    <i class="fa-solid fa-rotate-left"></i> RESET DEFAULTS
+                </button>
+            </div>
+
+            <div class="drawer-note">
+                <i class="fa-solid fa-shield-halved"></i>
+                Runs 100% locally on 127.0.0.1 — zero telemetry or tracking.
+            </div>
+        </aside>
+    </div>
+
+    <!-- ======================= LEGAL MODAL ======================= -->
+    <div id="legalModal" class="modal-overlay hidden">
+        <div class="modal-card panel-crops">
+            <div class="modal-head">
+                <div class="modal-title">
+                    <span class="sheet-no mono">LAW</span>
+                    <h3 class="display-title"><i class="fa-solid fa-scale-balanced"></i> Personal &amp; fair use agreement</h3>
+                </div>
+            </div>
+
+            <div class="modal-body">
+                <div class="legal-notice">
+                    <i class="fa-solid fa-triangle-exclamation"></i>
+                    <p><strong>Private non-commercial use only:</strong> developed strictly for personal offline viewing, research and educational archival.</p>
+                </div>
+
+                <h4 class="mono legal-h">1 · INTENDED PURPOSE</h4>
+                <p class="legal-p">This software operates locally on your machine and is not hosted for commercial distribution or public download services.</p>
+
+                <h4 class="mono legal-h">2 · FAIR USE &amp; RIGHTS</h4>
+                <p class="legal-p">Ensure you own the rights, hold permission, or operate under CC / Fair Use exceptions when saving media.</p>
+
+                <h4 class="mono legal-h">3 · NON-REDISTRIBUTION</h4>
+                <p class="legal-p">Commercial re-uploading, broadcasting, or resale of copyrighted media is strictly prohibited.</p>
+            </div>
+
+            <div class="modal-foot">
+                <button type="button" id="acceptLegalBtn" class="press-btn flex-1">
+                    <span><i class="fa-solid fa-check"></i> I AGREE &amp; UNDERSTAND</span>
+                    <i class="fa-solid fa-arrow-right-long press-btn-arrow" aria-hidden="true"></i>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ======================= JOB TICKET / PROGRESS MODAL ======================= -->
+    <div id="progressModal" class="modal-overlay hidden">
+        <div class="modal-card panel-crops">
+            <div class="modal-head">
+                <div class="modal-title">
+                    <span class="sheet-no mono">JOB</span>
+                    <h3 id="modalTaskTitle" class="display-title"><i class="fa-solid fa-cloud-arrow-down pulsing-icon"></i> Downloading stream…</h3>
+                </div>
+            </div>
+
+            <div class="progress-body">
+                <div id="queueNotice" class="queue-notice hidden">
+                    <i class="fa-solid fa-hourglass-half"></i>
+                    <span id="queueNoticeText" class="mono">Engine queue position…</span>
+                </div>
+
+                <div class="progress-head-row">
+                    <span id="progressPercent" class="percent-text">0.0%</span>
+                    <span id="progressStatusMsg" class="mono status-text">Contacting engine…</span>
+                </div>
+                <div class="progress-track">
+                    <div id="progressBarFill" class="progress-bar-fill" style="width: 0%;"></div>
+                </div>
+
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <i class="fa-solid fa-gauge-high"></i>
+                        <div class="metric-info">
+                            <span class="metric-label mono">Download speed</span>
+                            <span id="metricSpeed" class="metric-value mono">0 KB/s</span>
+                        </div>
+                    </div>
+                    <div class="metric-card">
+                        <i class="fa-solid fa-database"></i>
+                        <div class="metric-info">
+                            <span class="metric-label mono">Downloaded / total</span>
+                            <span id="metricBytes" class="metric-value mono">0 MB / Dynamic</span>
+                        </div>
+                    </div>
+                    <div class="metric-card">
+                        <i class="fa-regular fa-clock"></i>
+                        <div class="metric-info">
+                            <span class="metric-label mono">Time remaining</span>
+                            <span id="metricEta" class="metric-value mono">--:--</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="modal-foot hidden" id="modalFooter">
+                <button type="button" id="openFolderBtn" class="btn-success hidden">
+                    <i class="fa-solid fa-folder-open"></i> OPEN FOLDER
+                </button>
+                <a id="saveFileBtn" href="#" class="btn-secondary hidden" download>
+                    <i class="fa-solid fa-circle-check"></i> SAVE A COPY
+                </a>
+                <button type="button" id="retryBtn" class="btn-warning hidden">
+                    <i class="fa-solid fa-rotate-right"></i> RETRY
+                </button>
+                <button type="button" id="closeModalBtn" class="btn-secondary">CLOSE</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+
+    <script src="app.js"></script>
+</body>
+</html>
