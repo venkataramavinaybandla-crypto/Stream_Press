@@ -24,9 +24,10 @@ import time
 import urllib.request
 import uuid
 import zipfile
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 import imageio_ffmpeg
 import yt_dlp
@@ -291,6 +292,8 @@ def _clean_error(exc: Exception) -> str:
         return "This media is private and cannot be downloaded."
     if "empty media response" in lowered or "no media found" in lowered or "no media" in lowered:
         return "No downloadable media found here — the post may need a logged-in browser session (see Machine Settings → Browser cookies) or may have been removed."
+    if "no video formats found" in lowered:
+        return "This post has no video stream — if it is an image post, the images are offered automatically. Otherwise the source may need a logged-in browser session (Machine Settings → Browser cookies)."
     if "no video could be found" in lowered:
         return "This X post has no extractable video stream. If it is a photo post, the images are offered automatically — otherwise videos may need a logged-in browser session (Machine Settings → Browser cookies)."
     if "http error 404" in lowered:
@@ -307,6 +310,8 @@ def _clean_error(exc: Exception) -> str:
         return "DRM-protected stream — copy-protected content cannot be saved."
     if "confirm you're not a bot" in lowered or "bot check" in lowered:
         return "The source is running a bot check right now. Wait a few minutes and try again."
+    if "unsupported audio format" in lowered or "unsupported video format" in lowered:
+        return "That media format is not supported — for audio pick MP3, M4A, WAV or FLAC."
     if "unsupported" in lowered:
         return "This site or link type is not supported yet. Try a direct media page URL."
     if len(msg) > 420:
@@ -427,12 +432,30 @@ def _probe_url(url: str, timeout: float = 6.0) -> bool:
             return False
 
 
+def _is_placeholder_image(url: str) -> bool:
+    """Skip generic logos / default avatars that og:image sometimes points at."""
+    lowered = url.lower()
+    markers = (
+        "abs.twimg.com/rweb/ssr/default",   # X/Twitter logo
+        "youtube.com/img/",                  # YouTube logo
+        "rsrc.php",                          # Facebook sprite/placeholder
+        "static.licdn.com/sc/h/",            # LinkedIn logo
+        "instagram.com/static/",             # IG default avatar
+        "default_profile",                   # generic default avatar
+        "spacer.gif", "data:image", "pixel.gif",
+        "placeholder", "avatar-default",
+    )
+    return any(m in lowered for m in markers)
+
+
 def _og_image_url(html_text: Optional[str]) -> Optional[str]:
     if not html_text:
         return None
     m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)', html_text)
     if not m:
         m = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', html_text)
+    if not m:
+        m = re.search(r'<meta[^>]+property=["\']og:image:secure_url["\'][^>]+content=["\']([^"\']+)', html_text)
     if not m:
         return None
     url = html.unescape(m.group(1)).strip()
@@ -560,11 +583,248 @@ def _post_image_fallback(url: str) -> Optional[Dict[str, Any]]:
         "is_profile": False,
         "has_video": False,
         "has_audio": False,
+        "fallback": True,
         "video_formats": [],
         "audio_formats": [],
         "images": images,
         "image_count": len(images),
     }
+
+
+def _pinterest_result(url: str, pin_id: str, title: str, uploader: str, image: Dict[str, Any]) -> Dict[str, Any]:
+    """Synthetic analyze result for a single Pinterest pin image."""
+    return {
+        "url": url,
+        "title": title,
+        "duration": 0,
+        "duration_str": "Image",
+        "thumbnail": image["url"],
+        "uploader": uploader,
+        "view_count": 0,
+        "view_count_str": "N/A",
+        "is_live": False,
+        "source": "PINTEREST",
+        "extractor_key": "Pinterest",
+        "highest_res_height": 0,
+        "highest_res_label": "Pin image",
+        "media_kind": "images",
+        "is_profile": False,
+        "has_video": False,
+        "has_audio": False,
+        "fallback": True,
+        "video_formats": [],
+        "audio_formats": [],
+        "images": [image],
+        "image_count": 1,
+    }
+
+
+def _generic_page_image_fallback(url: str) -> Optional[Dict[str, Any]]:
+    """Universal last resort: when the extractor finds no media, grab the page's
+    og:image / twitter:image (embedded on nearly every news & social page) so
+    the press still has an image to hand over. Placeholder logos are skipped."""
+    if not url.startswith("http"):
+        return None
+    page = _http_get(url, max_bytes=1_200_000)
+    if not page:
+        return None
+    image_url = _og_image_url(page)
+    if not image_url or _is_placeholder_image(image_url):
+        # og:image absent or a placeholder logo — try twitter:image before giving up.
+        m = re.search(r'<meta[^>]+name=["\']twitter:image(?:src)?["\'][^>]+content=["\']([^"\']+)', page)
+        if not m:
+            m = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']twitter:image(?:src)?["\']', page)
+        if m:
+            image_url = html.unescape(m.group(1)).strip()
+    if not image_url or not image_url.startswith("http") or _is_placeholder_image(image_url):
+        return None
+
+    host = (urlparse(url).hostname or "").lower().replace("www.", "")
+    source_label = host.split(".")[0].upper() if "." in host else "WEB"
+    title = _og_title(page) or (host or "Web page")
+    image = {
+        "id": "page-image",
+        "label": "Page image · best available",
+        "kind": "post_image",
+        "url": image_url,
+        "width": None,
+        "height": None,
+        "ext": _ext_of(image_url),
+    }
+    return {
+        "url": url,
+        "title": title,
+        "duration": 0,
+        "duration_str": "Image",
+        "thumbnail": image_url,
+        "uploader": host or "Web",
+        "view_count": 0,
+        "view_count_str": "N/A",
+        "is_live": False,
+        "source": source_label,
+        "extractor_key": "Generic",
+        "highest_res_height": 0,
+        "highest_res_label": "Page image",
+        "media_kind": "images",
+        "is_profile": False,
+        "has_video": False,
+        "has_audio": False,
+        "fallback": True,
+        "video_formats": [],
+        "audio_formats": [],
+        "images": [image],
+        "image_count": 1,
+    }
+
+
+def _pinterest_image_fallback(url: str) -> Optional[Dict[str, Any]]:
+    """Image-only Pinterest pins: yt-dlp raises 'No video formats found!' before
+    returning anything, so ask Pinterest's own Pin API for the image (the same
+    endpoint the extractor uses — the full-res 'images' variants are in there)."""
+    host = (urlparse(url).hostname or "").lower()
+    if "pinterest" not in host:
+        return None
+    m = re.search(r"/pin/(?:[\w-]+--)?(\d+)", url)
+    if not m:
+        return None
+    pin_id = m.group(1)
+    options = {"field_set_key": "unauth_react_main_pin", "id": pin_id}
+    qs = urlencode({"data": json.dumps({"options": options})})
+    api_url = f"https://www.pinterest.com/resource/PinResource/get/?{qs}"
+    try:
+        req = urllib.request.Request(api_url, headers={
+            "User-Agent": DEFAULT_UA,
+            "X-Pinterest-PWS-Handler": "www/[username].js",
+        })
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            payload = json.loads(resp.read(1_500_000).decode("utf-8", "replace"))
+    except Exception:
+        return None
+    pin = (payload or {}).get("resource_response", {}).get("data") or {}
+    if not isinstance(pin, dict):
+        return None
+
+    best_url, best_area, best_w, best_h = None, 0, 0, 0
+    for v in (pin.get("images") or {}).values():
+        if not isinstance(v, dict):
+            continue
+        u = (v.get("url") or "").strip()
+        if not u.startswith("http"):
+            continue
+        try:
+            w, h = int(v.get("width") or 0), int(v.get("height") or 0)
+        except (TypeError, ValueError):
+            w = h = 0
+        area = (w or 0) * (h or 0)
+        if area >= best_area:
+            best_url, best_area, best_w, best_h = u, area, w, h
+    if not best_url:
+        return None
+
+    title = pin.get("title") or pin.get("grid_title") or ""
+    title = title.strip() if isinstance(title, str) else ""
+    title = title or f"Pinterest pin {pin_id}"
+    attribution = pin.get("closeup_attribution")
+    uploader = attribution.get("full_name") if isinstance(attribution, dict) else None
+    dims = f" · {best_w}×{best_h}" if best_w and best_h else ""
+    image = {
+        "id": "pin-image",
+        "label": f"Pin image · full resolution{dims}",
+        "kind": "post_image",
+        "url": best_url,
+        "width": best_w or None,
+        "height": best_h or None,
+        "ext": _ext_of(best_url),
+    }
+    return _pinterest_result(url, pin_id, title, uploader or "Pinterest", image)
+
+
+def _pinterest_page_fallback(url: str) -> Optional[Dict[str, Any]]:
+    """Backup for image-only pins when Pinterest's Pin API is rate-limited:
+    scrape the pin page for the embedded full-res 'originals' CDN URL.
+    The pin page always repeats the pin's own image hash at every size, so the
+    most common hash wins and its embedded originals URL is used as-is."""
+    host = (urlparse(url).hostname or "").lower()
+    if "pinterest" not in host:
+        return None
+    m = re.search(r"/pin/(?:[\w-]+--)?(\d+)", url)
+    if not m:
+        return None
+    pin_id = m.group(1)
+    page = _http_get(url, max_bytes=1_500_000)
+    if not page:
+        return None
+
+    # Dead / removed pins: Pinterest serves a shell page that may embed a random
+    # related pin's image. Real pin pages ALWAYS carry og:title + og:url pointing
+    # at the pin — reject anything that lacks them or points elsewhere.
+    title_probe = _og_title(page) or ""
+    if not title_probe:
+        return None
+    if re.search(r"not found|doesn't exist|does not exist|\b404\b|page removed|was removed|unavailable", title_probe, re.I):
+        return None
+    og_url_m = re.search(r'<meta[^>]+property=["\']og:url["\'][^>]+content=["\']([^"\']+)', page)
+    if not og_url_m:
+        og_url_m = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:url["\']', page)
+    if og_url_m:
+        og_url_val = html.unescape(og_url_m.group(1)).strip()
+        if og_url_val and pin_id not in og_url_val:
+            return None
+
+    # Full-res 'originals' URLs embedded in the page (they carry the true extension).
+    originals = sorted(set(re.findall(
+        r"i\.pinimg\.com/originals/((?:[a-f0-9]{2}/){3}[a-f0-9]{32})\.(png|jpe?g|webp|gif)", page)))
+    # How often each image hash appears — the pin's own image repeats at every size.
+    hashes = re.findall(
+        r"i\.pinimg\.com/[a-z0-9x_]+/((?:[a-f0-9]{2}/){3}[a-f0-9]{32})\.", page)
+    top_hash = Counter(hashes).most_common(1)[0][0] if hashes else None
+
+    # Only trust an originals URL whose hash is also the pin's own image (it always
+    # repeats across the sized variants). Never grab a lexicographically-first
+    # avatar or related-pin image.
+    hash_set = set(hashes)
+    best_url = None
+    if originals:
+        for hsh, ext in originals:
+            if hsh in hash_set and (top_hash is None or hsh == top_hash):
+                best_url = f"https://i.pinimg.com/originals/{hsh}.{ext}"
+                break
+
+    dims = None
+    if not best_url:
+        # No trusted originals: pick the largest sized variant of the main image.
+        sized = sorted(set(re.findall(
+            r"i\.pinimg\.com/([a-z0-9x_]+)/((?:[a-f0-9]{2}/){3}[a-f0-9]{32})\.(png|jpe?g|webp)", page)))
+
+        def token_val(t: str) -> int:
+            mm = re.match(r"(\d+)x", t)
+            return int(mm.group(1)) if mm else 0
+
+        if sized:
+            cands = [s for s in sized if s[1] == top_hash] or sized
+            size, hsh, ext = max(cands, key=lambda s: token_val(s[0]))
+            best_url = f"https://i.pinimg.com/{size}/{hsh}.{ext}"
+            mm = re.match(r"(\d+)x(\d+)", size)
+            if mm:
+                dims = (int(mm.group(1)), int(mm.group(2)))
+    if not best_url:
+        return None
+
+    title = _og_title(page) or ""
+    if "|" in title:
+        title = "|".join(title.split("|")[:-1]).strip()  # drop Pinterest's appended blurb
+    title = title.strip() or f"Pinterest pin {pin_id}"
+    label = "Pin image · full resolution" + (f" · {dims[0]}×{dims[1]}" if dims else "")
+    image = {
+        "id": "pin-image",
+        "label": label,
+        "kind": "post_image",
+        "url": best_url,
+        "width": dims[0] if dims else None,
+        "height": dims[1] if dims else None,
+        "ext": _ext_of(best_url),
+    }
+    return _pinterest_result(url, pin_id, title, "Pinterest", image)
 
 
 def _profile_only_result(url: str, art: List[Dict[str, Any]], page: Optional[str]) -> Dict[str, Any]:
@@ -766,6 +1026,7 @@ def _simple_post_images(info: Dict[str, Any], max_items: int = 12) -> List[Dict[
 class AnalyzeRequest(BaseModel):
     url: str
     cookies_browser: Optional[str] = None
+    mode: str = "video"  # "video" | "image" — what the user is hunting for
 
 
 class DownloadRequest(BaseModel):
@@ -932,6 +1193,8 @@ def analyze_video(req: AnalyzeRequest):
             "image_count": 1,
         }
 
+    hunt = req.mode if req.mode in ("video", "image") else "video"
+
     is_profile_guess = _is_yt_channel_url(url) or _is_profile_url(url)
     profile_page = _http_get(url) if is_profile_guess else None
     profile_art = _profile_art_from_page(profile_page)
@@ -955,7 +1218,12 @@ def analyze_video(req: AnalyzeRequest):
     except Exception as e:
         if is_profile_guess and profile_art:
             return _profile_only_result(url, profile_art, profile_page)
-        fallback = _post_image_fallback(url)
+        fallback = (
+            _post_image_fallback(url)
+            or _pinterest_image_fallback(url)
+            or _pinterest_page_fallback(url)
+            or _generic_page_image_fallback(url)
+        )
         if fallback:
             return fallback
         raise HTTPException(status_code=500, detail=_clean_error(e))
@@ -1073,6 +1341,14 @@ def analyze_video(req: AnalyzeRequest):
         else:
             images = _simple_post_images(info)
 
+    # Mode-aware image hunt: in IMAGE MODE keep digging for an image whenever the
+    # extraction gave none; in VIDEO MODE also rescue a page with no video at all
+    # ("video not found → still bring the image").
+    if not images and (hunt == "image" or not sorted_video_formats):
+        generic = _generic_page_image_fallback(url)
+        if generic:
+            images = generic.get("images") or []
+
     if is_profile and images:
         media_kind = "profile"
     elif sorted_video_formats:
@@ -1088,7 +1364,7 @@ def analyze_video(req: AnalyzeRequest):
         "url": url,
         "title": title,
         "duration": duration,
-        "duration_str": format_eta(duration) if duration else "Live Stream",
+        "duration_str": format_eta(duration) if duration else ("Live Stream" if is_live else "--:--"),
         "thumbnail": thumbnail,
         "uploader": uploader,
         "view_count": view_count,
@@ -1231,7 +1507,11 @@ def _run_download(task_id: str, req: DownloadRequest, task_dir: str) -> None:
 
 
 def _run_direct_download(task_id: str, req: DownloadRequest, task_dir: str) -> None:
-    """Download a single direct media URL (image / thumbnail / avatar) at full speed."""
+    """Download a single direct media URL (image / thumbnail / avatar) at full speed.
+
+    Uses a plain HTTP stream instead of yt-dlp — some CDNs (Wikimedia, …) refuse
+    yt-dlp's downloader with a 403 even though a normal browser fetch works.
+    Honours the optional referer and the speed throttle."""
     url = req.direct_url or ""
     if not url.startswith("http"):
         raise RuntimeError("No valid image URL to download.")
@@ -1247,24 +1527,55 @@ def _run_direct_download(task_id: str, req: DownloadRequest, task_dir: str) -> N
         if task:
             task["title"] = title
             task["thumbnail"] = url
-
-    opts = _build_common_opts(task_id, req.concurrency, req.rate_limit_mbps)
-    opts["outtmpl"] = os.path.join(task_dir, "%(title)s.%(ext)s")
-    opts["writethumbnail"] = False
-    info = {
-        "id": task_id[:8],
-        "title": title,
-        "url": url,
-        "ext": ext,
-        "http_headers": headers,
-    }
-    with _lock:
-        task = tasks.get(task_id)
-        if task:
             task["status"] = "downloading"
             task["status_msg"] = "Fetching image at full resolution…"
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        ydl.process_ie_result(info, download=True)
+
+    if req.cookies_browser:
+        # Login-walled direct media needs the browser session — the plain HTTP
+        # fetch can't send cookies, so use yt-dlp's cookie-aware downloader.
+        opts = _build_common_opts(task_id, req.concurrency, req.rate_limit_mbps, req.cookies_browser)
+        opts["outtmpl"] = os.path.join(task_dir, "%(title)s.%(ext)s")
+        opts["writethumbnail"] = False
+        info = {
+            "id": task_id[:8],
+            "title": title,
+            "url": url,
+            "ext": ext,
+            "http_headers": headers,
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.process_ie_result(info, download=True)
+        return
+
+    rate_bytes = max(0, int((req.rate_limit_mbps or 0) * 1024 * 1024))
+    out_path = os.path.join(task_dir, f"{title}.{ext}")
+    try:
+        http_req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(http_req, timeout=60) as resp:
+            total = int(resp.headers.get("Content-Length") or 0)
+            with _lock:
+                task = tasks.get(task_id)
+                if task:
+                    task["total_bytes"] = total
+                    task["total_str"] = format_bytes(total) if total else "Dynamic"
+            downloaded = 0
+            with open(out_path, "wb") as fh:
+                while True:
+                    chunk = resp.read(256 * 1024)
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+                    downloaded += len(chunk)
+                    if rate_bytes > 0:
+                        time.sleep(len(chunk) / rate_bytes)
+                    with _lock:
+                        task = tasks.get(task_id)
+                        if task:
+                            task["downloaded_bytes"] = downloaded
+                            task["downloaded_str"] = format_bytes(downloaded)
+                            task["status_msg"] = f"Fetching image… {format_bytes(downloaded)}"
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"HTTP Error {e.code}: {e.reason}") from e
 
 
 def _run_multi_image_download(task_id: str, req: DownloadRequest, task_dir: str) -> None:
@@ -1356,6 +1667,7 @@ def _save_output(task_id: str, task_dir: str, req: DownloadRequest, file_path: s
                 "task_id": task_id,
                 "title": (task or {}).get("title") or "Untitled Media",
                 "filename": filename,
+                "filepath": final_path,  # survives restarts so Save/Open-folder keep working
                 "file_size_str": format_bytes(file_size),
                 "thumbnail": (task or {}).get("thumbnail", ""),
                 "kind": "image" if req.kind in ("direct", "images") else ("audio" if req.audio_only else "video"),
@@ -1465,26 +1777,42 @@ def get_progress(task_id: str):
     return task
 
 
-@app.get("/api/file/{task_id}")
-def get_file(task_id: str):
+def _find_task_filepath(task_id: str) -> str:
+    """Resolve a completed file's path, surviving server restarts: first the live
+    task dict, then the persisted history ledger (which stores the real path)."""
     with _lock:
         task = tasks.get(task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="Task not found.")
-    filepath = task.get("filepath") or ""
-    if task.get("status") != "completed" or not filepath or not os.path.exists(filepath):
+        if task:
+            return task.get("filepath") or ""
+    with _lock:
+        for item in history:
+            if item.get("task_id") == task_id:
+                fp = item.get("filepath") or ""
+                if fp and os.path.exists(fp):
+                    return fp
+                fname = item.get("filename")
+                if fname:
+                    candidate = os.path.join(DOWNLOADS_DIR, fname)
+                    if os.path.exists(candidate):
+                        return candidate
+    return ""
+
+
+@app.get("/api/file/{task_id}")
+def get_file(task_id: str):
+    filepath = _find_task_filepath(task_id)
+    if not filepath or not os.path.exists(filepath):
         raise HTTPException(status_code=400, detail="File is not ready for download yet.")
-    return FileResponse(path=filepath, filename=task.get("filename") or os.path.basename(filepath), media_type="application/octet-stream")
+    return FileResponse(path=filepath, filename=os.path.basename(filepath), media_type="application/octet-stream")
 
 
 @app.post("/api/open-folder/{task_id}")
 def open_download_folder(task_id: str):
     """Open the containing folder in the OS file explorer (local personal use)."""
-    with _lock:
-        task = tasks.get(task_id)
-    if not task or task.get("status") != "completed" or not task.get("filepath"):
+    filepath = _find_task_filepath(task_id)
+    if not filepath or not os.path.exists(filepath):
         raise HTTPException(status_code=404, detail="No saved file for this task.")
-    folder = os.path.dirname(task["filepath"])
+    folder = os.path.dirname(filepath)
     try:
         if os.name == "nt":
             os.startfile(folder)  # type: ignore[attr-defined]

@@ -11,6 +11,8 @@ Reads **1,000+ sources** (via yt-dlp): YouTube, Instagram, X/Twitter, Facebook, 
 ## ✨ Features
 
 - **Universal links** — paste any media URL; the source is auto-detected and shown in the results.
+- **Two press modes** — **VIDEO MODE** (videos, streams & audio take priority) and **IMAGE MODE** (photos, pins, posts & profile art take priority). The mode is sent with every request, so the engine hunts accordingly. Flip with one toggle — the mode is remembered between sessions.
+- **Never stops at “no video”** — if a link has no video (or the video is unreachable), the engine keeps digging: post images, Pinterest API/page, then a universal og:image scrape of the page itself. A video link that fails still hands you its thumbnail/cover instead of an error.
 - **Videos & audio** — per-resolution video rows plus audio-only extracts (MP3 / M4A / WAV / FLAC).
 - **Images & posts** — download image posts straight from Instagram, X, Pinterest, Reddit, LinkedIn and more; multi-image posts pack into a single **ZIP**.
 - **Thumbnails** — every YouTube video exposes its full thumbnail ladder (Max res 1280×720 down to Default) as one-tap downloads.
@@ -63,9 +65,7 @@ Optional env vars:
 
 ## 🧠 How it works
 
-## 🧠 How it works
-
-- **Frontend** — plain HTML/CSS/JS (no build step). A print-shop "press" UI: paste a link on the Order Slip → the Press Column renders a release sheet with format ledger rows → pick a run.
+- **Frontend** — plain HTML/CSS/JS (no build step). A print-shop "press" UI: paste a link on the Order Slip → the Press Column renders a release sheet. In **VIDEO MODE** the format ledger leads with thumbnails in the extras panel; in **IMAGE MODE** the image grid becomes the primary content, and a one-tap hint flips you back to video when a link also carries video/audio.
 - **Backend** — FastAPI + **yt-dlp** (1,700+ extractors) + FFmpeg for merging and embedding. Downloads are staged in a temp directory, then **moved into your Downloads folder** when complete. History, streak and settings are stored in `server/` JSON files that are git-ignored.
 - **Save flow** — the file is already in your Downloads; the UI can open the folder for you, or "Save a copy" to re-download it through the browser.
 

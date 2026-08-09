@@ -87,7 +87,7 @@
                     </div>
                     <div class="halftone-band" aria-hidden="true"></div>
                     <h2 class="slip-title">Send any <span class="serif-italic">link</span> to the press</h2>
-                    <p class="slip-sub mono">VIDEOS · IMAGES · POSTS · THUMBNAILS · PROFILE PICS &amp; COVERS — YOUTUBE, INSTAGRAM, X, LINKEDIN, FACEBOOK, PINTEREST &amp; 1,000+ MORE</p>
+                    <p class="slip-sub mono">VIDEO MODE: VIDEOS · AUDIO · STREAMS — IMAGE MODE: PHOTOS · PINS · POSTS · PROFILE ART — YOUTUBE, INSTAGRAM, X, LINKEDIN, FACEBOOK, PINTEREST &amp; 1,000+ MORE</p>
                 </div>
 
                 <label class="field-label mono" for="urlInput">01 · MEDIA ADDRESS — VIDEOS, IMAGES, POSTS, PROFILES</label>
@@ -106,6 +106,23 @@
                     <span id="errorText">Invalid YouTube link format</span>
                 </div>
 
+                <div class="mode-switch" role="group" aria-label="Download mode">
+                    <button type="button" class="mode-btn active" data-mode="video" aria-pressed="true" title="Videos, streams & audio take priority">
+                        <i class="fa-solid fa-clapperboard"></i>
+                        <span class="mode-btn-txt">
+                            <span class="mode-btn-title">VIDEO MODE</span>
+                            <span class="mode-btn-sub mono">VIDEOS · AUDIO · STREAMS</span>
+                        </span>
+                    </button>
+                    <button type="button" class="mode-btn" data-mode="image" aria-pressed="false" title="Images, photos & art take priority">
+                        <i class="fa-solid fa-images"></i>
+                        <span class="mode-btn-txt">
+                            <span class="mode-btn-title">IMAGE MODE</span>
+                            <span class="mode-btn-sub mono">PHOTOS · PINS · POSTS · ART</span>
+                        </span>
+                    </button>
+                </div>
+
                 <button type="button" id="analyzeBtn" class="press-btn">
                     <span class="press-btn-left"><i class="fa-solid fa-gear"></i> <span class="btn-text">SEND TO PRESS</span></span>
                     <i class="fa-solid fa-arrow-right-long press-btn-arrow" aria-hidden="true"></i>
@@ -114,13 +131,13 @@
                 <div class="samples-block">
                     <span class="field-label mono"><i class="fa-solid fa-fire"></i> 02 · SAMPLE CATALOGUE</span>
                     <div class="sample-row">
-                        <button class="sample-chip" data-url="https://www.youtube.com/watch?v=LXb3EKWsInQ">YT · 4K</button>
-                        <button class="sample-chip" data-url="https://www.youtube.com/watch?v=jNQXAC9IVRw">YT · SHORT</button>
-                        <button class="sample-chip" data-url="https://www.youtube.com/@YouTube">YT · CHANNEL → ART</button>
-                        <button class="sample-chip" data-url="https://x.com/anyone/status/2006432369365102625">X · IMAGE POST</button>
-                        <button class="sample-chip" data-url="https://www.pinterest.com/pin/664281013778109217/">PINTEREST · PIN</button>
-                        <button class="sample-chip" data-url="https://x.com/elonmusk">X · PROFILE PIC</button>
-                        <button class="sample-chip" data-url="https://upload.wikimedia.org/wikipedia/en/a/a9/Example.jpg">DIRECT · IMAGE</button>
+                        <button class="sample-chip" data-mode="video" data-url="https://www.youtube.com/watch?v=LXb3EKWsInQ">YT · 4K</button>
+                        <button class="sample-chip" data-mode="video" data-url="https://www.youtube.com/watch?v=jNQXAC9IVRw">YT · SHORT</button>
+                        <button class="sample-chip" data-mode="image" data-url="https://www.youtube.com/@YouTube">YT · CHANNEL → ART</button>
+                        <button class="sample-chip" data-mode="image" data-url="https://x.com/anyone/status/2006432369365102625">X · IMAGE POST</button>
+                        <button class="sample-chip" data-mode="image" data-url="https://www.pinterest.com/pin/664281013778109217/">PINTEREST · PIN</button>
+                        <button class="sample-chip" data-mode="image" data-url="https://x.com/elonmusk">X · PROFILE PIC</button>
+                        <button class="sample-chip" data-mode="image" data-url="https://upload.wikimedia.org/wikipedia/en/a/a9/Example.jpg">DIRECT · IMAGE</button>
                         <button class="sample-chip" data-focus>ANY LINK →</button>
                     </div>
                 </div>
@@ -153,7 +170,7 @@
                         <span class="sheet-no mono">Nº 02</span>
                         <h3 class="display-title">The press is rolling…</h3>
                     </div>
-                    <p class="mono loader-sub">SCANNING MEDIA · VIDEO · IMAGES · AUDIO · PROFILE ART</p>
+                    <p class="mono loader-sub" id="loaderSub">SCANNING MEDIA · VIDEO · IMAGES · AUDIO · PROFILE ART</p>
                     <div class="roller-track" aria-hidden="true">
                         <div class="roller-bar"></div>
                     </div>
@@ -211,8 +228,8 @@
                         <div class="sheet-head extras-head">
                             <span class="sheet-no mono">Nº 02B</span>
                             <div class="sheet-head-text">
-                                <h2 class="display-title"><i class="fa-solid fa-image"></i> Press extras</h2>
-                                <span class="mono sheet-sub">IMAGES · THUMBNAILS · PROFILE PICTURES &amp; COVER ART</span>
+                                <h2 class="display-title" id="extrasTitle"><i class="fa-solid fa-image"></i> Press extras</h2>
+                                <span class="mono sheet-sub" id="extrasSub">IMAGES · THUMBNAILS · PROFILE PICTURES &amp; COVER ART</span>
                             </div>
                         </div>
                         <div id="imageGrid" class="image-grid"></div>
@@ -243,6 +260,13 @@
                             <p class="tab-note mono"><i class="fa-solid fa-circle-info"></i> AUDIO IS EXTRACTED FROM SOURCE — TAGS &amp; COVER ART EMBEDDED WHEN ENABLED</p>
                             <div class="format-grid" id="audioFormatGrid"></div>
                         </div>
+                    </div>
+
+                    <!-- IMAGE MODE: flip back to video when the link carries video/audio -->
+                    <div id="modeHint" class="mode-hint hidden">
+                        <span class="mode-hint-ico"><i class="fa-solid fa-arrow-right-arrow-left"></i></span>
+                        <span id="modeHintText" class="mono"></span>
+                        <button type="button" id="switchModeBtn" class="stamp-btn stamp-btn-ink">SWITCH TO VIDEO MODE</button>
                     </div>
                 </section>
 

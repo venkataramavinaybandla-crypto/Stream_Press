@@ -36,6 +36,13 @@
         const imageGrid = $('imageGrid');
         const downloadAllImagesBtn = $('downloadAllImagesBtn');
         const formatsContainer = document.querySelector('.formats-container');
+        const modeBtns = document.querySelectorAll('.mode-btn');
+        const modeHint = $('modeHint');
+        const modeHintText = $('modeHintText');
+        const switchModeBtn = $('switchModeBtn');
+        const extrasTitle = $('extrasTitle');
+        const extrasSub = $('extrasSub');
+        const loaderSub = $('loaderSub');
 
         const progressModal = $('progressModal');
         const modalTaskTitle = $('modalTaskTitle');
@@ -102,6 +109,7 @@
             autoSave: true,
             cookiesBrowser: '',
             theme: 'light',
+            mode: 'video',
         };
 
         // Incognito is a per-session privacy mode — never persisted.
@@ -287,11 +295,46 @@
                     showToast('Paste a link from any supported site');
                     return;
                 }
+                if (chip.dataset.mode) setMode(chip.dataset.mode);
                 urlInput.value = chip.dataset.url;
                 toggleInputButtons();
                 hideError();
                 analyzeCurrentUrl();
             });
+        });
+
+        // ---- Mode switch: VIDEO MODE / IMAGE MODE -------------------------------
+        function setMode(mode) {
+            settings.mode = mode === 'image' ? 'image' : 'video';
+            saveSettings();
+            document.querySelectorAll('.mode-btn').forEach((b) => {
+                b.classList.toggle('active', b.dataset.mode === settings.mode);
+                b.setAttribute('aria-pressed', b.dataset.mode === settings.mode ? 'true' : 'false');
+            });
+            urlInput.placeholder = settings.mode === 'image'
+                ? 'https:// — any image link: photos, pins, posts, profile art…'
+                : 'https:// — YouTube, Instagram, X, LinkedIn, Pinterest, direct image…';
+            if (loaderSub) {
+                loaderSub.textContent = settings.mode === 'image'
+                    ? 'SCANNING FOR IMAGES · POSTS · ART · THUMBNAILS'
+                    : 'SCANNING MEDIA · VIDEO · IMAGES · AUDIO · PROFILE ART';
+            }
+            if (currentVideoData) renderVideoDetails(currentVideoData);
+        }
+
+        modeBtns.forEach((btn) => {
+            btn.addEventListener('click', () => {
+                if ((btn.dataset.mode === 'image' ? 'image' : 'video') === settings.mode) return;
+                setMode(btn.dataset.mode);
+                showToast(settings.mode === 'image'
+                    ? 'IMAGE MODE — images take priority on every link'
+                    : 'VIDEO MODE — videos, streams & audio take priority');
+            });
+        });
+
+        switchModeBtn.addEventListener('click', () => {
+            setMode('video');
+            showToast('VIDEO MODE — videos, streams & audio take priority');
         });
 
         // ---- Tabs --------------------------------------------------------------
@@ -346,7 +389,10 @@
                 const resp = await fetch('/api/analyze', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url }),
+                    body: JSON.stringify({
+                        url,
+                        mode: settings.mode === 'image' ? 'image' : 'video',
+                    }),
                 });
                 const data = await resp.json();
                 loadingSection.classList.add('hidden');
@@ -380,8 +426,15 @@
             videoThumb.style.display = data.thumbnail ? '' : 'none';
             videoThumb.onerror = () => { videoThumb.style.display = 'none'; };
 
-            // Kind-aware badges
-            if (kind === 'video') {
+            const mode = settings.mode === 'image' ? 'image' : 'video';
+
+            // Kind-aware badges (IMAGE MODE wears its own stamp)
+            if (mode === 'image') {
+                durationBadge.innerHTML = '<i class="fa-solid fa-images"></i> IMAGE MODE';
+                maxResBadge.innerHTML = images.length > 0
+                    ? `<i class="fa-solid fa-layer-group"></i> ${images.length} IMAGE${images.length === 1 ? '' : 'S'} FOUND`
+                    : '<i class="fa-solid fa-circle-question"></i> NO IMAGES';
+            } else if (kind === 'video') {
                 durationBadge.innerHTML = `<i class="fa-regular fa-clock"></i> ${escapeHtml(data.duration_str)}`;
                 maxResBadge.innerHTML = `<i class="fa-solid fa-crown"></i> ${escapeHtml(data.highest_res_label)}`;
             } else if (kind === 'profile') {
@@ -398,17 +451,61 @@
             uploaderText.textContent = data.uploader;
             videoTitle.textContent = data.title;
             viewsText.textContent = data.view_count_str;
-            maxResTag.innerHTML = kind === 'video'
-                ? `<i class="fa-solid fa-sparkles"></i> Highest: ${escapeHtml(data.highest_res_label)}`
-                : `<i class="fa-solid fa-image"></i> ${images.length} image${images.length === 1 ? '' : 's'} available for download`;
+            maxResTag.innerHTML = mode === 'image'
+                ? `<i class="fa-solid fa-image"></i> ${images.length} image${images.length === 1 ? '' : 's'} found — IMAGE MODE`
+                : kind === 'video'
+                    ? `<i class="fa-solid fa-sparkles"></i> Highest: ${escapeHtml(data.highest_res_label)}`
+                    : `<i class="fa-solid fa-image"></i> ${images.length} image${images.length === 1 ? '' : 's'} available for download`;
             if (sourceBadge) {
                 sourceBadge.innerHTML = `<i class="fa-solid fa-globe"></i> SOURCE: ${escapeHtml(data.source || 'UNKNOWN')}`;
             }
 
-            // Kind-aware hero action
+            // Fallback note: the engine rescued a page image when no video was found
+            let fallbackNoteEl = document.getElementById('fallbackNote');
+            if (data.fallback && !hasVideo) {
+                if (!fallbackNoteEl) {
+                    fallbackNoteEl = document.createElement('span');
+                    fallbackNoteEl.id = 'fallbackNote';
+                    fallbackNoteEl.className = 'fallback-note mono';
+                    const metaRow = document.querySelector('.release-meta');
+                    if (metaRow) metaRow.appendChild(fallbackNoteEl);
+                }
+                fallbackNoteEl.textContent = '⚠ NO VIDEO FOUND — PAGE IMAGE SHOWN INSTEAD';
+            } else if (fallbackNoteEl) {
+                fallbackNoteEl.remove();
+            }
+
+            // Kind-aware hero action (IMAGE MODE puts images first)
             quickDownloadBtn.disabled = false;
             const heroTitle = quickDownloadBtn.querySelector('.hero-title');
-            if (kind === 'video') {
+            if (mode === 'image') {
+                if (images.length > 0) {
+                    heroTitle.innerHTML = images.length > 1
+                        ? '<i class="fa-solid fa-file-zipper"></i> DOWNLOAD ALL IMAGES (ZIP)'
+                        : '<i class="fa-solid fa-download"></i> DOWNLOAD IMAGE';
+                    quickDlSubtitle.textContent = images.length > 1
+                        ? `Packs all ${images.length} images into one ZIP archive`
+                        : 'Downloads the image straight to your PC';
+                    quickDownloadBtn.onclick = () => {
+                        triggerDownload({
+                            url: data.url,
+                            kind: 'images',
+                            image_urls: images.map((im) => im.url),
+                            download_title: data.title,
+                            referer: getOrigin(data.url),
+                        }, `${data.title} · All ${images.length} images`);
+                    };
+                } else if (hasVideo || data.has_audio) {
+                    heroTitle.innerHTML = '<i class="fa-solid fa-arrow-right-arrow-left"></i> SWITCH TO VIDEO MODE';
+                    quickDlSubtitle.textContent = 'No images on this link — it holds video / audio instead';
+                    quickDownloadBtn.onclick = () => setMode('video');
+                } else {
+                    heroTitle.innerHTML = '<i class="fa-solid fa-circle-info"></i> NOTHING DOWNLOADABLE';
+                    quickDlSubtitle.textContent = 'No image, video or audio could be found on this page';
+                    quickDownloadBtn.onclick = null;
+                    quickDownloadBtn.disabled = true;
+                }
+            } else if (kind === 'video') {
                 heroTitle.innerHTML = '<i class="fa-solid fa-download"></i> DOWNLOAD HIGHEST QUALITY';
                 quickDlSubtitle.textContent = `Auto-selects best ${data.highest_res_label} stream + original audio`;
                 quickDownloadBtn.onclick = () => {
@@ -517,13 +614,37 @@
                 });
             }
 
-            // Tabs: hide the format ledger entirely when there is no video or audio
-            if (formatsContainer) {
-                formatsContainer.classList.toggle('hidden', !hasVideo && !data.has_audio);
+            // Mode-aware ledger: IMAGE MODE tucks video/audio behind a switch hint
+            if (mode === 'image') {
+                if (formatsContainer) formatsContainer.classList.add('hidden');
+                if (hasVideo || data.has_audio) {
+                    modeHint.classList.remove('hidden');
+                    modeHintText.textContent = hasVideo
+                        ? `This link also carries ${data.video_formats.length} video stream${data.video_formats.length === 1 ? '' : 's'} (up to ${data.highest_res_label}) — flip to VIDEO MODE for full-quality video & audio extraction.`
+                        : 'This link carries audio — flip to VIDEO MODE to extract it as MP3 / M4A / FLAC.';
+                    switchModeBtn.textContent = 'SWITCH TO VIDEO MODE';
+                } else {
+                    modeHint.classList.add('hidden');
+                }
+            } else {
+                modeHint.classList.add('hidden');
+                if (formatsContainer) {
+                    formatsContainer.classList.toggle('hidden', !hasVideo && !data.has_audio);
+                }
+                if (!hasVideo && data.has_audio) {
+                    tabBtns.forEach((b) => b.classList.toggle('active', b.dataset.tab === 'audio-tab'));
+                    tabContents.forEach((c) => c.classList.toggle('active', c.id === 'audio-tab'));
+                }
             }
-            if (!hasVideo && data.has_audio) {
-                tabBtns.forEach((b) => b.classList.toggle('active', b.dataset.tab === 'audio-tab'));
-                tabContents.forEach((c) => c.classList.toggle('active', c.id === 'audio-tab'));
+
+            // Press extras: primary content in IMAGE MODE, side extras in VIDEO MODE
+            extrasSection.classList.toggle('extras-primary', mode === 'image');
+            if (mode === 'image') {
+                extrasTitle.innerHTML = '<i class="fa-solid fa-images"></i> Images found';
+                extrasSub.textContent = 'ALL IMAGES ON THIS LINK — DOWNLOAD EACH CARD OR GRAB THE WHOLE ZIP';
+            } else {
+                extrasTitle.innerHTML = '<i class="fa-solid fa-image"></i> Press extras';
+                extrasSub.textContent = 'IMAGES · THUMBNAILS · PROFILE PICTURES & COVER ART';
             }
 
             renderImages(images, data);
@@ -872,6 +993,7 @@
 
         // ---- Init -------------------------------------------------------------------
         syncSettingsUi();
+        setMode(settings.mode || 'video');
         loadHistory();
         loadStats();
         loadStreak();
