@@ -26,7 +26,7 @@
                 <h1 class="wordmark">STREAM<span class="wm-accent">PRESS</span></h1>
                 <p class="edition-line">
                     <em class="serif-italic">The universal, personal-use media engine</em>
-                    <span class="mono edition-meta">printed on this machine &nbsp;·&nbsp; 1,000+ sources &nbsp;·&nbsp; fair use only</span>
+                    <span class="mono edition-meta">printed on this machine &nbsp;·&nbsp; 1,000+ sources &nbsp;·&nbsp; videos · images · profile art &nbsp;·&nbsp; fair use only</span>
                 </p>
             </div>
             <div class="masthead-side">
@@ -86,14 +86,14 @@
                         <span class="slip-reg mono">REC·SLIP</span>
                     </div>
                     <div class="halftone-band" aria-hidden="true"></div>
-                    <h2 class="slip-title">Send any <span class="serif-italic">stream</span> to the press</h2>
-                    <p class="slip-sub mono">PASTE A LINK FROM YOUTUBE, INSTAGRAM, X, FACEBOOK, TIKTOK &amp; 1,000+ MORE</p>
+                    <h2 class="slip-title">Send any <span class="serif-italic">link</span> to the press</h2>
+                    <p class="slip-sub mono">VIDEOS · IMAGES · POSTS · THUMBNAILS · PROFILE PICS &amp; COVERS — YOUTUBE, INSTAGRAM, X, LINKEDIN, FACEBOOK, PINTEREST &amp; 1,000+ MORE</p>
                 </div>
 
-                <label class="field-label mono" for="urlInput">01 · VIDEO ADDRESS — 1,000+ SOURCES</label>
+                <label class="field-label mono" for="urlInput">01 · MEDIA ADDRESS — VIDEOS, IMAGES, POSTS, PROFILES</label>
                 <div class="url-console">
                     <i class="fa-solid fa-link console-yt" aria-hidden="true"></i>
-                    <input type="text" id="urlInput" placeholder="https:// — YouTube, Instagram, X, TikTok, Facebook…" autocomplete="off" spellcheck="false">
+                    <input type="text" id="urlInput" placeholder="https:// — YouTube, Instagram, X, LinkedIn, Pinterest, direct image…" autocomplete="off" spellcheck="false">
                     <div class="console-actions">
                         <button type="button" id="copyBtn" class="mini-btn hidden" title="Copy link"><i class="fa-solid fa-link"></i></button>
                         <button type="button" id="pasteBtn" class="mini-btn" title="Paste from clipboard"><i class="fa-solid fa-paste"></i></button>
@@ -116,7 +116,11 @@
                     <div class="sample-row">
                         <button class="sample-chip" data-url="https://www.youtube.com/watch?v=LXb3EKWsInQ">YT · 4K</button>
                         <button class="sample-chip" data-url="https://www.youtube.com/watch?v=jNQXAC9IVRw">YT · SHORT</button>
-                        <button class="sample-chip" data-url="https://www.youtube.com/shorts/32WkL299mUQ">YT · SHORTS</button>
+                        <button class="sample-chip" data-url="https://www.youtube.com/@YouTube">YT · CHANNEL → ART</button>
+                        <button class="sample-chip" data-url="https://x.com/anyone/status/2006432369365102625">X · IMAGE POST</button>
+                        <button class="sample-chip" data-url="https://www.pinterest.com/pin/664281013778109217/">PINTEREST · PIN</button>
+                        <button class="sample-chip" data-url="https://x.com/elonmusk">X · PROFILE PIC</button>
+                        <button class="sample-chip" data-url="https://upload.wikimedia.org/wikipedia/en/a/a9/Example.jpg">DIRECT · IMAGE</button>
                         <button class="sample-chip" data-focus>ANY LINK →</button>
                     </div>
                 </div>
@@ -124,7 +128,7 @@
                 <div class="supported-strip">
                     <span class="field-label mono"><i class="fa-solid fa-circle-check"></i> 03 · SUPPORTED PRESS SOURCES</span>
                     <div class="source-tags mono">
-                        <span>YOUTUBE</span><span>INSTAGRAM</span><span>X / TWITTER</span><span>FACEBOOK</span><span>TIKTOK</span><span>SNAPCHAT</span><span>PINTEREST</span><span>REDDIT</span><span>VIMEO</span><span>TWITCH</span><span>DAILYMOTION</span><span>+1,000 MORE</span>
+                        <span>YOUTUBE</span><span>INSTAGRAM</span><span>X / TWITTER</span><span>FACEBOOK</span><span>TIKTOK</span><span>LINKEDIN</span><span>PINTEREST</span><span>REDDIT</span><span>VIMEO</span><span>TWITCH</span><span>DAILYMOTION</span><span>+1,000 MORE</span>
                     </div>
                 </div>
 
@@ -135,7 +139,7 @@
                     <button type="button" id="readTermsBtn" class="stamp-btn stamp-btn-red">READ LEGAL TERMS</button>
                 </div>
 
-                <p class="fineprint mono">DRM-PROTECTED STREAMS (NETFLIX, PRIME VIDEO) &amp; LOGIN-WALLED CONTENT CANNOT BE SAVED. MOST SOCIAL &amp; OPEN-WEB VIDEOS WORK.</p>
+                <p class="fineprint mono">DRM-PROTECTED STREAMS (NETFLIX, PRIME VIDEO) CANNOT BE SAVED. SOME PRIVATE / LOGIN-WALLED POSTS NEED A BROWSER SESSION — SEE MACHINE SETTINGS. MOST OPEN-WEB MEDIA WORKS.</p>
 
                 <div class="perforation" aria-hidden="true"></div>
             </aside>
@@ -149,7 +153,7 @@
                         <span class="sheet-no mono">Nº 02</span>
                         <h3 class="display-title">The press is rolling…</h3>
                     </div>
-                    <p class="mono loader-sub">SCANNING STREAMS · 60FPS · HDR · ORIGINAL AUDIO</p>
+                    <p class="mono loader-sub">SCANNING MEDIA · VIDEO · IMAGES · AUDIO · PROFILE ART</p>
                     <div class="roller-track" aria-hidden="true">
                         <div class="roller-bar"></div>
                     </div>
@@ -161,7 +165,7 @@
                     <div class="sheet-head">
                         <span class="sheet-no mono">Nº 02</span>
                         <div class="sheet-head-text">
-                            <h2 class="display-title">Stream selector</h2>
+                            <h2 class="display-title">Release sheet</h2>
                             <span class="mono sheet-sub">RELEASE SHEET — PICK YOUR PRESS RUN</span>
                         </div>
                     </div>
@@ -201,6 +205,25 @@
                             </div>
                         </div>
                     </div>
+
+                    <!-- Press extras: images, thumbnails, profile art -->
+                    <section id="extrasSection" class="extras-panel panel-crops hidden">
+                        <div class="sheet-head extras-head">
+                            <span class="sheet-no mono">Nº 02B</span>
+                            <div class="sheet-head-text">
+                                <h2 class="display-title"><i class="fa-solid fa-image"></i> Press extras</h2>
+                                <span class="mono sheet-sub">IMAGES · THUMBNAILS · PROFILE PICTURES &amp; COVER ART</span>
+                            </div>
+                        </div>
+                        <div id="imageGrid" class="image-grid"></div>
+                        <button type="button" id="downloadAllImagesBtn" class="hero-btn slim hidden">
+                            <span class="hero-btn-inner">
+                                <span class="hero-title"><i class="fa-solid fa-file-zipper"></i> DOWNLOAD ALL IMAGES (ZIP)</span>
+                                <span class="hero-sub mono">Packs every image above into one archive</span>
+                            </span>
+                            <i class="fa-solid fa-arrow-right hero-arrow" aria-hidden="true"></i>
+                        </button>
+                    </section>
 
                     <div class="formats-container">
                         <div class="tabs-head">
@@ -321,6 +344,21 @@
                     <input type="checkbox" id="autoSaveToggle" checked>
                     <span class="slider-switch"></span>
                 </label>
+            </div>
+
+            <div class="setting-group">
+                <label class="setting-label" for="cookiesBrowserSelect">Browser session (cookies)</label>
+                <select id="cookiesBrowserSelect">
+                    <option value="">Off — public content only</option>
+                    <option value="chrome">Chrome</option>
+                    <option value="edge">Edge</option>
+                    <option value="firefox">Firefox</option>
+                    <option value="brave">Brave</option>
+                    <option value="chromium">Chromium</option>
+                    <option value="opera">Opera</option>
+                    <option value="safari">Safari</option>
+                </select>
+                <p class="setting-hint mono">USES YOUR LOGGED-IN SESSION FOR PRIVATE / LOGIN-WALLED POSTS (INSTAGRAM, X, FACEBOOK, LINKEDIN…) — NEVER LEAVES THIS MACHINE</p>
             </div>
 
             <div class="setting-group">

@@ -32,6 +32,10 @@
         const tabContents = document.querySelectorAll('.tab-content');
         const videoFormatGrid = $('videoFormatGrid');
         const audioFormatGrid = $('audioFormatGrid');
+        const extrasSection = $('extrasSection');
+        const imageGrid = $('imageGrid');
+        const downloadAllImagesBtn = $('downloadAllImagesBtn');
+        const formatsContainer = document.querySelector('.formats-container');
 
         const progressModal = $('progressModal');
         const modalTaskTitle = $('modalTaskTitle');
@@ -68,6 +72,7 @@
         const embedMetadataToggle = $('embedMetadataToggle');
         const embedThumbToggle = $('embedThumbToggle');
         const autoSaveToggle = $('autoSaveToggle');
+        const cookiesBrowserSelect = $('cookiesBrowserSelect');
         const resetSettingsBtn = $('resetSettingsBtn');
 
         const statusPill = $('serverStatus');
@@ -95,6 +100,7 @@
             embedMetadata: true,
             embedThumbnail: true,
             autoSave: true,
+            cookiesBrowser: '',
             theme: 'light',
         };
 
@@ -130,6 +136,7 @@
             embedMetadataToggle.checked = settings.embedMetadata;
             embedThumbToggle.checked = settings.embedThumbnail;
             autoSaveToggle.checked = settings.autoSave;
+            cookiesBrowserSelect.value = settings.cookiesBrowser || '';
             applyTheme(settings.theme);
         }
 
@@ -220,6 +227,13 @@
         autoSaveToggle.addEventListener('change', () => {
             settings.autoSave = autoSaveToggle.checked;
             saveSettings();
+        });
+        cookiesBrowserSelect.addEventListener('change', () => {
+            settings.cookiesBrowser = cookiesBrowserSelect.value;
+            saveSettings();
+            showToast(settings.cookiesBrowser
+                ? `Browser session: ${settings.cookiesBrowser} — login-walled posts unlocked`
+                : 'Browser session off — public content only');
         });
         resetSettingsBtn.addEventListener('click', () => {
             settings = { ...DEFAULT_SETTINGS };
@@ -353,17 +367,77 @@
         }
 
         // ---- Render ------------------------------------------------------------
+        function getOrigin(url) {
+            try { return new URL(url).origin; } catch (e) { return ''; }
+        }
+
         function renderVideoDetails(data) {
+            const kind = data.media_kind || 'video';
+            const images = data.images || [];
+            const hasVideo = !!(data.video_formats && data.video_formats.length > 0);
+
             videoThumb.src = data.thumbnail || '';
-            durationBadge.innerHTML = `<i class="fa-regular fa-clock"></i> ${escapeHtml(data.duration_str)}`;
-            maxResBadge.innerHTML = `<i class="fa-solid fa-crown"></i> ${escapeHtml(data.highest_res_label)}`;
+            videoThumb.style.display = data.thumbnail ? '' : 'none';
+            videoThumb.onerror = () => { videoThumb.style.display = 'none'; };
+
+            // Kind-aware badges
+            if (kind === 'video') {
+                durationBadge.innerHTML = `<i class="fa-regular fa-clock"></i> ${escapeHtml(data.duration_str)}`;
+                maxResBadge.innerHTML = `<i class="fa-solid fa-crown"></i> ${escapeHtml(data.highest_res_label)}`;
+            } else if (kind === 'profile') {
+                durationBadge.innerHTML = '<i class="fa-solid fa-user"></i> PROFILE';
+                maxResBadge.innerHTML = `<i class="fa-solid fa-id-badge"></i> ${images.length} IMAGE${images.length === 1 ? '' : 'S'}`;
+            } else if (kind === 'images') {
+                durationBadge.innerHTML = '<i class="fa-solid fa-image"></i> IMAGE POST';
+                maxResBadge.innerHTML = `<i class="fa-solid fa-layer-group"></i> ${images.length} IMAGE${images.length === 1 ? '' : 'S'}`;
+            } else {
+                durationBadge.innerHTML = '<i class="fa-regular fa-clock"></i> --:--';
+                maxResBadge.innerHTML = '<i class="fa-solid fa-circle-question"></i> UNKNOWN';
+            }
+
             uploaderText.textContent = data.uploader;
             videoTitle.textContent = data.title;
             viewsText.textContent = data.view_count_str;
-            maxResTag.innerHTML = `<i class="fa-solid fa-sparkles"></i> Highest: ${escapeHtml(data.highest_res_label)}`;
-            quickDlSubtitle.textContent = `Auto-selects best ${data.highest_res_label} stream + original audio`;
+            maxResTag.innerHTML = kind === 'video'
+                ? `<i class="fa-solid fa-sparkles"></i> Highest: ${escapeHtml(data.highest_res_label)}`
+                : `<i class="fa-solid fa-image"></i> ${images.length} image${images.length === 1 ? '' : 's'} available for download`;
             if (sourceBadge) {
                 sourceBadge.innerHTML = `<i class="fa-solid fa-globe"></i> SOURCE: ${escapeHtml(data.source || 'UNKNOWN')}`;
+            }
+
+            // Kind-aware hero action
+            quickDownloadBtn.disabled = false;
+            const heroTitle = quickDownloadBtn.querySelector('.hero-title');
+            if (kind === 'video') {
+                heroTitle.innerHTML = '<i class="fa-solid fa-download"></i> DOWNLOAD HIGHEST QUALITY';
+                quickDlSubtitle.textContent = `Auto-selects best ${data.highest_res_label} stream + original audio`;
+                quickDownloadBtn.onclick = () => {
+                    triggerDownload({
+                        url: data.url,
+                        kind: 'video',
+                        format_id: 'highest',
+                        audio_only: false,
+                    }, `${data.title} · Highest quality`);
+                };
+            } else if (images.length > 0) {
+                heroTitle.innerHTML = '<i class="fa-solid fa-file-zipper"></i> DOWNLOAD ALL MEDIA';
+                quickDlSubtitle.textContent = images.length > 1
+                    ? `Packs all ${images.length} images into one ZIP archive`
+                    : 'Downloads the image straight to your PC';
+                quickDownloadBtn.onclick = () => {
+                    triggerDownload({
+                        url: data.url,
+                        kind: 'images',
+                        image_urls: images.map((im) => im.url),
+                        download_title: data.title,
+                        referer: getOrigin(data.url),
+                    }, `${data.title} · All media`);
+                };
+            } else {
+                heroTitle.innerHTML = '<i class="fa-solid fa-circle-info"></i> NOTHING DOWNLOADABLE';
+                quickDlSubtitle.textContent = 'No video, audio or image could be found on this page';
+                quickDownloadBtn.onclick = null;
+                quickDownloadBtn.disabled = true;
             }
 
             if (data.is_live) {
@@ -443,7 +517,71 @@
                 });
             }
 
+            // Tabs: hide the format ledger entirely when there is no video or audio
+            if (formatsContainer) {
+                formatsContainer.classList.toggle('hidden', !hasVideo && !data.has_audio);
+            }
+            if (!hasVideo && data.has_audio) {
+                tabBtns.forEach((b) => b.classList.toggle('active', b.dataset.tab === 'audio-tab'));
+                tabContents.forEach((c) => c.classList.toggle('active', c.id === 'audio-tab'));
+            }
+
+            renderImages(images, data);
             resultSection.classList.remove('hidden');
+        }
+
+        // ---- Press extras: images, thumbnails, profile art ---------------------
+        function renderImages(images, data) {
+            if (!images || images.length === 0) {
+                extrasSection.classList.add('hidden');
+                return;
+            }
+            extrasSection.classList.remove('hidden');
+            imageGrid.innerHTML = '';
+            const origin = getOrigin(data.url);
+
+            images.forEach((img) => {
+                const kindTag = img.kind === 'avatar' ? 'PROFILE PIC'
+                    : img.kind === 'banner' ? 'COVER ART'
+                    : img.kind === 'thumbnail' ? 'THUMBNAIL' : 'POST IMAGE';
+                const card = document.createElement('div');
+                card.className = 'image-card';
+                card.innerHTML = `
+                    <div class="image-card-thumb">
+                        <img src="${escapeHtml(img.url)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.closest('.image-card-thumb').classList.add('img-failed')">
+                        <span class="image-kind-stamp mono">${kindTag}</span>
+                    </div>
+                    <div class="image-card-info">
+                        <span class="image-card-label">${escapeHtml(img.label)}</span>
+                        <span class="image-card-meta mono">${img.width && img.height ? img.width + '×' + img.height + ' · ' : ''}${escapeHtml((img.ext || 'jpg').toUpperCase())}</span>
+                    </div>
+                    <button type="button" class="btn-card-dl image-dl"><i class="fa-solid fa-download"></i> DOWNLOAD</button>
+                `;
+                card.querySelector('.image-dl').addEventListener('click', () => {
+                    triggerDownload({
+                        url: data.url,
+                        kind: 'direct',
+                        direct_url: img.url,
+                        image_ext: img.ext,
+                        download_title: `${data.title} · ${img.label}`,
+                        referer: origin,
+                    }, `${data.title} · ${img.label}`);
+                });
+                imageGrid.appendChild(card);
+            });
+
+            downloadAllImagesBtn.classList.toggle('hidden', images.length < 2);
+            downloadAllImagesBtn.querySelector('.hero-title').innerHTML =
+                `<i class="fa-solid fa-file-zipper"></i> DOWNLOAD ALL ${images.length} IMAGES (ZIP)`;
+            downloadAllImagesBtn.onclick = () => {
+                triggerDownload({
+                    url: data.url,
+                    kind: 'images',
+                    image_urls: images.map((im) => im.url),
+                    download_title: data.title,
+                    referer: origin,
+                }, `${data.title} · All ${images.length} images`);
+            };
         }
 
         // ---- Download flow -----------------------------------------------------
@@ -454,6 +592,7 @@
                 rate_limit_mbps: settings.rateLimitMbps ? parseFloat(settings.rateLimitMbps) : null,
                 embed_metadata: settings.embedMetadata,
                 embed_thumbnail: settings.embedThumbnail,
+                cookies_browser: settings.cookiesBrowser || null,
                 incognito,
             };
         }
@@ -632,7 +771,8 @@
                 items.forEach((item) => {
                     const row = document.createElement('div');
                     row.className = 'history-item';
-                    const icon = item.audio_only ? 'fa-solid fa-music' : 'fa-solid fa-film';
+                    const icon = item.kind === 'image' ? 'fa-solid fa-image'
+                        : item.audio_only ? 'fa-solid fa-music' : 'fa-solid fa-film';
                     const thumb = item.thumbnail
                         ? `<img class="history-thumb" src="${escapeHtml(item.thumbnail)}" alt="" loading="lazy" onerror="this.remove()">`
                         : `<i class="${icon} history-icon"></i>`;

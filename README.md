@@ -10,8 +10,13 @@ Reads **1,000+ sources** (via yt-dlp): YouTube, Instagram, X/Twitter, Facebook, 
 
 ## ✨ Features
 
-- **Universal links** — paste any video URL; the source is auto-detected and shown in the results.
-- **Format picker** — per-resolution video rows plus audio-only extracts (MP3 / M4A / WAV / FLAC).
+- **Universal links** — paste any media URL; the source is auto-detected and shown in the results.
+- **Videos & audio** — per-resolution video rows plus audio-only extracts (MP3 / M4A / WAV / FLAC).
+- **Images & posts** — download image posts straight from Instagram, X, Pinterest, Reddit, LinkedIn and more; multi-image posts pack into a single **ZIP**.
+- **Thumbnails** — every YouTube video exposes its full thumbnail ladder (Max res 1280×720 down to Default) as one-tap downloads.
+- **Profile art** — channel links offer the **profile picture** and **cover banner** at full resolution (YouTube, X, LinkedIn, Instagram, Pinterest…).
+- **Direct image links** — paste any `https://…/photo.jpg` and it saves as-is.
+- **Browser session** — opt-in cookies-from-browser unlocks login-walled posts (private Instagram/X/Facebook/LinkedIn) using your own logged-in account, locally.
 - **Straight to your Downloads** — finished files land in your PC's real **Downloads folder** (never inside the repo), with an **Open Folder** button on completion.
 - **Dark mode** — warm paper by default, "night ink" at the tap of a button.
 - **Incognito mode** — downloads leave no history and don't touch your streak.
@@ -39,6 +44,24 @@ Optional env vars:
 | `YTMAX_DOWNLOAD_DIR` | Custom folder for finished downloads (default: your OS Downloads folder) |
 | `YTMAX_WORKERS` | Parallel download workers (default `2`) |
 | `YTMAX_TASK_CAP` | Max remembered tasks (default `60`) |
+
+## 🖼️ What you can pull
+
+| Paste a link to… | You get |
+|---|---|
+| YouTube video | MP4 video, audio, **thumbnail ladder** |
+| YouTube channel (`/@handle`, `/channel/…`) | **Profile pic + cover banner** (full-res) |
+| Instagram / X / Pinterest / Reddit post | Video or **images** (carousels → ZIP) |
+| Instagram story / reel | Story or reel media (login often needed) |
+| LinkedIn post | Post video / images |
+| X / LinkedIn / IG profile | **Profile picture** at best available size |
+| Direct `https://…/photo.jpg` | The image itself |
+
+> Sites that show a login wall (private posts, some stories) need the **Browser session** option in *Machine Settings* — it reads cookies from your own browser on this machine, so you only ever download what your account can already see.
+
+> **Not supported:** DRM streams, and YouTube **community posts** (they render only in the app's JavaScript, so there is no stable link to scrape).
+
+## 🧠 How it works
 
 ## 🧠 How it works
 
