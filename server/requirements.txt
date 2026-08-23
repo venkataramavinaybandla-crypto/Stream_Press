@@ -1,6 +1,7 @@
 fastapi>=0.110.0
 uvicorn>=0.28.0
 yt-dlp>=2024.03.10
+curl_cffi>=0.7.1
 imageio-ffmpeg>=0.4.9
 pydantic>=2.6.0
 python-multipart>=0.0.9

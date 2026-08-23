@@ -1212,21 +1212,66 @@ def analyze_video(req: AnalyzeRequest):
         # Profile pages are big playlists — one entry is enough to characterise them.
         ydl_opts["playlist_items"] = "1"
 
-    try:
+    def _try_extract(target_url: str):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+            return ydl.extract_info(target_url, download=False)
+
+    try:
+        info = _try_extract(url)
     except Exception as e:
-        if is_profile_guess and profile_art:
-            return _profile_only_result(url, profile_art, profile_page)
-        fallback = (
-            _post_image_fallback(url)
-            or _pinterest_image_fallback(url)
-            or _pinterest_page_fallback(url)
-            or _generic_page_image_fallback(url)
-        )
-        if fallback:
-            return fallback
-        raise HTTPException(status_code=500, detail=_clean_error(e))
+        first_error = e
+        first_reason = _clean_error(e)
+        retried_info = None
+
+        # Reddit's public JSON endpoint rate-limits per-IP; one short backoff
+        # retry clears most transient 429s instead of failing outright.
+        if "429" in str(e) or "too many requests" in str(e).lower():
+            time.sleep(4)
+            try:
+                retried_info = _try_extract(url)
+            except Exception:
+                retried_info = None
+
+        # Vimeo: the main vimeo.com/{id} page enforces session/password auth
+        # that the player.vimeo.com embed endpoint often does not — retry
+        # through the embed URL before giving up on a real video result.
+        if retried_info is None:
+            host = (urlparse(url).hostname or "").lower()
+            if "vimeo.com" in host and "player.vimeo.com" not in host:
+                vid_match = re.search(r"vimeo\.com/(?:video/)?(\d+)", url)
+                if vid_match:
+                    embed_url = f"https://player.vimeo.com/video/{vid_match.group(1)}"
+                    try:
+                        retried_info = _try_extract(embed_url)
+                    except Exception:
+                        retried_info = None
+
+        if retried_info is not None:
+            info = retried_info
+        else:
+            if is_profile_guess and profile_art:
+                return _profile_only_result(url, profile_art, profile_page)
+
+            fallback = (
+                _post_image_fallback(url)
+                or _pinterest_image_fallback(url)
+                or _pinterest_page_fallback(url)
+                or _generic_page_image_fallback(url)
+            )
+            # Only pass off a silent image swap when the source genuinely has
+            # no video (a real image post). Auth walls, bot checks, rate
+            # limits and impersonation failures get surfaced as real errors
+            # instead of being disguised as a successful image result.
+            genuinely_image_only = any(
+                k in str(first_error).lower()
+                for k in ("no video formats found", "no video could be found", "no media found")
+            )
+            if fallback and genuinely_image_only:
+                return fallback
+            if fallback:
+                fallback["fallback_reason"] = first_reason
+                return fallback
+            raise HTTPException(status_code=500, detail=first_reason)
 
     if not info:
         raise HTTPException(status_code=404, detail="Media information could not be retrieved.")

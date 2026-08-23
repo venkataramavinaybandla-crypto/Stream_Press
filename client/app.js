@@ -470,7 +470,9 @@
                     const metaRow = document.querySelector('.release-meta');
                     if (metaRow) metaRow.appendChild(fallbackNoteEl);
                 }
-                fallbackNoteEl.textContent = '⚠ NO VIDEO FOUND — PAGE IMAGE SHOWN INSTEAD';
+                fallbackNoteEl.textContent = data.fallback_reason
+                    ? `⚠ VIDEO EXTRACTION FAILED — ${data.fallback_reason.toUpperCase()}`
+                    : '⚠ NO VIDEO FOUND — PAGE IMAGE SHOWN INSTEAD';
             } else if (fallbackNoteEl) {
                 fallbackNoteEl.remove();
             }
