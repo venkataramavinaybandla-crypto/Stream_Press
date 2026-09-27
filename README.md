@@ -10,7 +10,7 @@ Reads **1,000+ sources** (via yt-dlp): YouTube, Instagram, X/Twitter, Facebook, 
 
 ## ✨ Features
 
-- **Universal links** — paste any media URL; the source is auto-detected and shown in the results.
+- **Universal input** — paste a share link, a raw page URL, an embed snippet (`<iframe src="…">` / `<video>`), a playlist/channel link, or an unblocker/wrapper link; the source is auto-detected and shown in the results. When a video isn't the page's primary content, the embedded player is discovered and used. Wrapper URLs are de-proxied — if the destination hides in a query param (`url=`, `target=`, `__cpo=`, `dest=`…, often percent- or base64-encoded), the real URL is decoded and used instead.
 - **Two press modes** — **VIDEO MODE** (videos, streams & audio take priority) and **IMAGE MODE** (photos, pins, posts & profile art take priority). The mode is sent with every request, so the engine hunts accordingly. Flip with one toggle — the mode is remembered between sessions.
 - **Never stops at “no video”** — if a link has no video (or the video is unreachable), the engine keeps digging: post images, Pinterest API/page, then a universal og:image scrape of the page itself. A video link that fails still hands you its thumbnail/cover instead of an error.
 - **Videos & audio** — per-resolution video rows plus audio-only extracts (MP3 / M4A / WAV / FLAC).
@@ -39,13 +39,19 @@ python run.py
 
 The launcher verifies FFmpeg, prints where files will be saved, and opens the web UI at `http://127.0.0.1:8000`.
 
-Optional env vars:
+Optional env vars (full reference: [`.env.example`](.env.example)):
 
 | Var | Effect |
 |---|---|
 | `YTMAX_DOWNLOAD_DIR` | Custom folder for finished downloads (default: your OS Downloads folder) |
 | `YTMAX_WORKERS` | Parallel download workers (default `2`) |
 | `YTMAX_TASK_CAP` | Max remembered tasks (default `60`) |
+| `YTMAX_COOKIES_FILE` | Path to a Netscape `cookies.txt` for login-walled / members-only / age-restricted videos |
+| `YTMAX_COOKIES_TXT` | Same as above, pasted inline as an env var |
+| `YTMAX_PROXY` | Proxy for outbound requests (fixes datacenter-IP blocks / bot checks) |
+| `YTMAX_SLEEP_INTERVAL` / `YTMAX_MAX_SLEEP_INTERVAL` | Randomized delay between fragment requests (anti-throttling) |
+| `YTMAX_AUTOUPDATE_YTDLP` | `1` = refresh yt-dlp extractors at startup (recommended on servers) |
+| `YTMAX_FFMPEG` | Override the ffmpeg binary (defaults to system ffmpeg, then imageio-ffmpeg) |
 
 ## 🖼️ What you can pull
 
@@ -75,6 +81,8 @@ This app **cannot run on Vercel** (or any serverless platform). Downloading medi
 
 - **Keep it local** (recommended) — `python run.py` on your own machine. This is the intended use.
 - **A small VPS / VDS or a persistent PaaS** (Railway, Render, Fly.io, a $5 VPS) if you want to reach it from other devices — expose it with auth in front, because it can fetch arbitrary URLs and write files.
+
+> **Deploying to Render?** Read **[docs/RENDER_DEPLOY.md](docs/RENDER_DEPLOY.md)**. A server succeeds or fails for reasons a laptop never hits — auth walls, datacenter-IP blocks, missing ffmpeg (quality caps), stale extractors. That runbook walks through the `cookies.txt` secret, the proxy, ffmpeg verification in the logs, and the yt-dlp auto-update, with a deployment checklist.
 - The repo itself is a normal Python project and hosts cleanly on GitHub as-is.
 
 ## 🧱 Project layout

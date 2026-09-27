@@ -2,7 +2,12 @@
 server/history.json
 server/state.json
 downloads/
+data/
 *.log
+
+# --- Cookie exports: live session tokens, never commit ---
+cookies.txt
+**/cookies.txt
 
 # --- Python ---
 __pycache__/

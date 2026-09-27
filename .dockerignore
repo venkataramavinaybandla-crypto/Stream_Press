@@ -1,0 +1,19 @@
+.git
+.gitignore
+.freebuff
+__pycache__/
+*.py[cod]
+*.log
+.venv/
+venv/
+env/
+
+# Never bake secrets or local runtime state into the image
+cookies.txt
+.env
+server/history.json
+server/state.json
+downloads/
+
+# Stale duplicate copy of the backend (single source of truth is server/main.py)
+Stream_Press/

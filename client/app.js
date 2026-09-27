@@ -184,8 +184,15 @@
         }
 
         function isLikelyUrl(url) {
-            let u = (url || '').trim();
-            if (!u) return false;
+            const raw = (url || '').trim();
+            if (!raw) return false;
+            // Embed codes / snippets (<iframe>, <video>, <source>, <embed>) are valid input —
+            // the server parses the src out of them.
+            if (/<(?:iframe|video|source|embed)\b/i.test(raw)) return true;
+            // Otherwise accept anything that merely CONTAINS a link (prose, bare host, page URL).
+            const m = raw.match(/https?:\/\/[^\s"'<>]+|\/\/[^\s"'<>]+/i);
+            let u = m ? m[0].trim() : raw;
+            if (u.startsWith('//')) u = 'https:' + u;
             if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
             try {
                 const parsed = new URL(u);
@@ -313,7 +320,7 @@
             });
             urlInput.placeholder = settings.mode === 'image'
                 ? 'https:// — any image link: photos, pins, posts, profile art…'
-                : 'https:// — YouTube, Instagram, X, LinkedIn, Pinterest, direct image…';
+                : 'https:// — a link, a page URL, an embed <iframe>, or a playlist…';
             if (loaderSub) {
                 loaderSub.textContent = settings.mode === 'image'
                     ? 'SCANNING FOR IMAGES · POSTS · ART · THUMBNAILS'
@@ -375,7 +382,7 @@
                 return;
             }
             if (!isLikelyUrl(url)) {
-                showError('Paste a valid video link (https://…). The press reads YouTube, Instagram, X, TikTok, Facebook, Pinterest and 1,000+ more sources.');
+                showError('Paste a link, a page URL, an embed <iframe>/<video> snippet, or a playlist/channel link. The press reads YouTube, Instagram, X, TikTok, Facebook, Pinterest and 1,000+ more sources.');
                 return;
             }
 
@@ -392,6 +399,7 @@
                     body: JSON.stringify({
                         url,
                         mode: settings.mode === 'image' ? 'image' : 'video',
+                        cookies_browser: settings.cookiesBrowser || null,
                     }),
                 });
                 const data = await resp.json();
@@ -418,6 +426,10 @@
         }
 
         function renderVideoDetails(data) {
+            if (data.is_playlist) {
+                renderPlaylistDetails(data);
+                return;
+            }
             const kind = data.media_kind || 'video';
             const images = data.images || [];
             const hasVideo = !!(data.video_formats && data.video_formats.length > 0);
@@ -650,6 +662,70 @@
             }
 
             renderImages(images, data);
+            resultSection.classList.remove('hidden');
+        }
+
+        // ---- Playlist / channel batch view -------------------------------------
+        function renderPlaylistDetails(data) {
+            const entries = data.entries || [];
+            videoThumb.src = data.thumbnail || '';
+            videoThumb.style.display = data.thumbnail ? '' : 'none';
+            videoThumb.onerror = () => { videoThumb.style.display = 'none'; };
+
+            durationBadge.innerHTML = '<i class="fa-solid fa-list"></i> PLAYLIST';
+            maxResBadge.innerHTML = `<i class="fa-solid fa-layer-group"></i> ${entries.length} ITEM${entries.length === 1 ? '' : 'S'}`;
+            uploaderText.textContent = data.uploader;
+            videoTitle.textContent = data.title;
+            viewsText.textContent = data.view_count_str;
+            maxResTag.innerHTML = `<i class="fa-solid fa-list"></i> ${entries.length} items available — batch download`;
+            if (sourceBadge) {
+                sourceBadge.innerHTML = `<i class="fa-solid fa-globe"></i> SOURCE: ${escapeHtml(data.source || 'UNKNOWN')}`;
+            }
+
+            quickDownloadBtn.disabled = entries.length === 0;
+            quickDownloadBtn.querySelector('.hero-title').innerHTML = '<i class="fa-solid fa-file-zipper"></i> DOWNLOAD WHOLE PLAYLIST';
+            quickDlSubtitle.textContent = `Saves all ${entries.length} items to your Downloads folder`;
+            quickDownloadBtn.onclick = () => {
+                triggerDownload({
+                    url: data.url,
+                    kind: 'playlist',
+                    download_title: data.title,
+                }, `${data.title} · ${entries.length} items`);
+            };
+
+            videoFormatGrid.innerHTML = '';
+            entries.forEach((entry) => {
+                const card = document.createElement('div');
+                card.className = 'format-card';
+                card.innerHTML = `
+                    <div class="format-badge-row">
+                        <span class="res-tag">#${entry.index}</span>
+                        <span class="tag-badge">ITEM</span>
+                    </div>
+                    <div class="format-details">
+                        <span><i class="fa-solid fa-film"></i> ${escapeHtml(entry.title)}</span>
+                        <span><i class="fa-regular fa-clock"></i> ${escapeHtml(entry.duration_str || '--:--')}</span>
+                    </div>
+                    <button class="btn-card-dl"><i class="fa-solid fa-download"></i> Download item</button>
+                `;
+                card.querySelector('.btn-card-dl').addEventListener('click', () => {
+                    triggerDownload({
+                        url: entry.url,
+                        kind: 'video',
+                        format_id: 'highest',
+                        audio_only: false,
+                    }, entry.title);
+                });
+                videoFormatGrid.appendChild(card);
+            });
+
+            audioFormatGrid.innerHTML = '<p class="tab-note">Open an item directly to extract audio as MP3 / M4A / FLAC.</p>';
+            if (formatsContainer) formatsContainer.classList.remove('hidden');
+            if (modeHint) modeHint.classList.add('hidden');
+            extrasSection.classList.toggle('extras-primary', false);
+            extrasTitle.innerHTML = '<i class="fa-solid fa-image"></i> Press extras';
+            extrasSub.textContent = 'IMAGES · THUMBNAILS · PROFILE PICTURES & COVER ART';
+            renderImages(data.images || [], data);
             resultSection.classList.remove('hidden');
         }
 

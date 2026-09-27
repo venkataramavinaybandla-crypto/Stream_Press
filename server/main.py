@@ -12,12 +12,15 @@ responsibility of the end user.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import html
 import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -27,7 +30,7 @@ import zipfile
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlencode, urlparse
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urljoin, urlparse, urlunsplit
 
 import imageio_ffmpeg
 import yt_dlp
@@ -64,10 +67,41 @@ STAGING_ROOT = os.path.join(tempfile.gettempdir(), "stream-press-staging")
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 os.makedirs(STAGING_ROOT, exist_ok=True)
 
-FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
+# ---------------------------------------------------------------------------
+# FFmpeg resolution — muxing must never silently degrade to a 360p combined
+# stream. Prefer a real system ffmpeg (the Dockerfile apt-installs one) and fall
+# back to the static binary bundled with imageio-ffmpeg so local runs work.
+# ---------------------------------------------------------------------------
+def _resolve_ffmpeg() -> str:
+    explicit = (os.environ.get("YTMAX_FFMPEG") or os.environ.get("FFMPEG_BINARY") or "").strip()
+    for cand in (explicit, shutil.which("ffmpeg") or ""):
+        if cand and os.path.exists(cand):
+            return cand
+    try:
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return "ffmpeg"
+
+
+def _ffmpeg_version(exe: str) -> str:
+    try:
+        out = subprocess.run([exe, "-version"], capture_output=True, text=True, timeout=15)
+        line = (out.stdout or "").splitlines()[0] if out.stdout else ""
+        return line.strip() or "unknown"
+    except Exception:
+        return "unavailable"
+
+
+def _ytdlp_version() -> str:
+    return getattr(yt_dlp.version, "__version__", "unknown")
+
+
+FFMPEG_EXE = _resolve_ffmpeg()
+FFMPEG_VERSION = _ffmpeg_version(FFMPEG_EXE)
+FFMPEG_AVAILABLE = FFMPEG_VERSION != "unavailable"
 
 APP_NAME = "STREAM PRESS"
-APP_VERSION = "3.0.0"
+APP_VERSION = "3.1.0"
 
 # Healthy-service limits (override via env if you really need to)
 MAX_WORKERS = max(1, int(os.environ.get("YTMAX_WORKERS", "2")))
@@ -78,11 +112,229 @@ ALLOWED_AUDIO_FORMATS = {"mp3", "m4a", "wav", "flac"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 TEMP_SUFFIXES = (".part", ".ytdl", ".temp")
 
+# Manifest-first selection: always ask for best video + best audio as SEPARATE
+# streams (from the HLS/DASH manifest) and let ffmpeg mux them. Never settle for
+# a pre-combined low-quality fallback, which is what caps output at 360p/720p.
+DEFAULT_VIDEO_FORMAT = "bestvideo+bestaudio/best"
+
 # A single well-formed browser UA helps CDNs (Instagram, Pinterest, X…) serve us.
 DEFAULT_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
+
+# ---------------------------------------------------------------------------
+# Cookie pipeline — the auth-wall fix
+# ---------------------------------------------------------------------------
+# Authenticated / age-restricted / members-only videos need a signed-in session.
+# Locally yt-dlp can borrow your browser profile, but a deployed server has no
+# browser — so it reads a Netscape-format cookies.txt instead:
+#   YTMAX_COOKIES_FILE=/etc/secrets/cookies.txt   (Render: a Secret File)
+#   YTMAX_COOKIES_TXT="<file contents>"           (inline, if you prefer an env var)
+COOKIES_FILE_ENV = (os.environ.get("YTMAX_COOKIES_FILE") or "").strip()
+COOKIES_TXT_ENV = os.environ.get("YTMAX_COOKIES_TXT") or ""
+COOKIES_DEFAULT_PATHS = [
+    "/etc/secrets/cookies.txt",              # Render Secret File default location
+    os.path.join(BASE_DIR, "cookies.txt"),   # repo root (git-ignored)
+]
+
+
+def _looks_like_netscape_cookies(text: str) -> bool:
+    """Accept the standard cookies.txt header or any tab-separated cookie row."""
+    if not text:
+        return False
+    if "# Netscape HTTP Cookie File" in text or "# HTTP Cookie File" in text:
+        return True
+    for line in text.splitlines():
+        if line and not line.startswith("#") and line.count("\t") >= 6:
+            return True
+    return False
+
+
+def _resolve_cookies_file() -> Optional[str]:
+    for cand in [COOKIES_FILE_ENV] + COOKIES_DEFAULT_PATHS:
+        if not cand or not os.path.isfile(cand):
+            continue
+        try:
+            with open(cand, "r", encoding="utf-8", errors="replace") as fh:
+                head = fh.read(8192)
+        except OSError:
+            continue
+        if _looks_like_netscape_cookies(head):
+            return cand
+    return None
+
+
+def _materialize_inline_cookies() -> Optional[str]:
+    """Write YTMAX_COOKIES_TXT to a private staging file yt-dlp can read."""
+    if not _looks_like_netscape_cookies(COOKIES_TXT_ENV):
+        return None
+    path = os.path.join(STAGING_ROOT, "cookies.txt")
+    try:
+        with open(path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(COOKIES_TXT_ENV)
+        os.chmod(path, 0o600)
+        return path
+    except OSError:
+        return None
+
+
+COOKIES_FILE = _resolve_cookies_file() or _materialize_inline_cookies()
+COOKIES_CONFIGURED = bool(COOKIES_FILE)
+
+# ---------------------------------------------------------------------------
+# Anti-bot / network resilience — a SEPARATE failure mode from the auth wall
+# ---------------------------------------------------------------------------
+# A datacenter IP range (Render's shared egress) can be rate-limited or blocked
+# outright; cookies do not fix that. Mitigations: a realistic User-Agent, a
+# randomized delay between fragment requests, and an optional proxy.
+PROXY_URL = (os.environ.get("YTMAX_PROXY") or "").strip() or None
+
+
+def _env_float(name: str, default: float = 0.0) -> float:
+    try:
+        return float(os.environ.get(name, "") or default)
+    except (TypeError, ValueError):
+        return default
+
+
+SLEEP_INTERVAL = _env_float("YTMAX_SLEEP_INTERVAL", 0.0)
+MAX_SLEEP_INTERVAL = _env_float("YTMAX_MAX_SLEEP_INTERVAL", 0.0)
+SLEEP_INTERVAL_REQUESTS = _env_float("YTMAX_SLEEP_INTERVAL_REQUESTS", 0.0)
+# Refresh yt-dlp at boot so YouTube signature-cipher patches are never stale.
+YTDLP_AUTO_UPDATE = (os.environ.get("YTMAX_AUTOUPDATE_YTDLP", "0").strip().lower()
+                     in ("1", "true", "yes", "on"))
+
+
+def _build_url_opener() -> urllib.request.OpenerDirector:
+    handlers: List[Any] = []
+    if PROXY_URL:
+        handlers.append(urllib.request.ProxyHandler({"http": PROXY_URL, "https": PROXY_URL}))
+    return urllib.request.build_opener(*handlers)
+
+
+# urllib paths (page scrapes, direct image fetches) honour the same proxy as yt-dlp.
+_URL_OPENER = _build_url_opener()
+
+
+def _curl_get(url: str, timeout: float) -> Optional[Any]:
+    """One curl_cffi GET with the browser persona; None when unavailable/failed.
+    Used as the first rung of the raw-fetch ladder — curl_cffi requests are NOT
+    routed through YTMAX_PROXY (urllib fallback below is)."""
+    if not url.startswith("http"):
+        return None
+    try:
+        from curl_cffi import requests as cffi_requests
+        return cffi_requests.get(url, impersonate="chrome", timeout=timeout,
+                                 allow_redirects=True)
+    except Exception:
+        return None
+
+
+def _network_opts() -> Dict[str, Any]:
+    """Shared yt-dlp options for anti-bot resilience (UA + jittered sleeps + proxy)."""
+    opts: Dict[str, Any] = {
+        "http_headers": {
+            "User-Agent": DEFAULT_UA,
+            "Accept-Language": "en-US,en;q=0.9",
+        },
+    }
+    if PROXY_URL:
+        opts["proxy"] = PROXY_URL
+    if SLEEP_INTERVAL > 0:
+        opts["sleep_interval"] = SLEEP_INTERVAL
+    if MAX_SLEEP_INTERVAL > 0:
+        opts["max_sleep_interval"] = max(MAX_SLEEP_INTERVAL, SLEEP_INTERVAL)
+    if SLEEP_INTERVAL_REQUESTS > 0:
+        opts["sleep_interval_requests"] = SLEEP_INTERVAL_REQUESTS
+    return opts
+
+
+# ---------------------------------------------------------------------------
+# Anti-"source refused the connection" resilience (site-agnostic)
+# ---------------------------------------------------------------------------
+# Many sources (Cloudflare-fronted or not) drop requests that don't look like a
+# real browser: non-browser TLS fingerprints, server/datacenter IPs, and broken
+# IPv6 egress all surface to the user as "connection refused / reset / timed
+# out". Instead of special-casing any one site, every extraction climbs a
+# client-persona retry ladder: hardened base options → browser TLS
+# impersonation (curl_cffi, if installed). Raw page fetches (_http_get) use the
+# same persona first. That fixes whole classes of sites at once.
+
+def _refused_connection(exc: Exception) -> bool:
+    """True for the connection-class failures a client-persona retry can fix:
+    TCP/TLS rejection, bot-walls that answer 403, DNS flakes, timeouts."""
+    lowered = str(exc).lower()
+    return any(k in lowered for k in (
+        "connection refused", "connection aborted", "connection reset",
+        "reset by peer", "remote end closed connection", "tunnel connection failed",
+        "timed out", "timeout", "getaddrinfo failed",
+        "temporary failure in name resolution", "name or service not known",
+        "errno 10060", "errno 10061", "errno 10054",
+        "http error 403", "forbidden", "ssl:", "certificate verify failed",
+        "sslv3", "handshake", "unable to download webpage",
+    ))
+
+
+_IMPERSONATE_STATE: Dict[str, Any] = {"tried": False, "target": None}
+
+
+def _get_impersonate_target() -> Optional[Any]:
+    """The curl_cffi Chrome fingerprint for yt-dlp — discovered once; None when
+    the impersonate stack is unavailable (later retries then skip that rung)."""
+    if not _IMPERSONATE_STATE["tried"]:
+        _IMPERSONATE_STATE["tried"] = True
+        try:
+            from yt_dlp.networking.impersonate import ImpersonateTarget
+            target = ImpersonateTarget(client="chrome")
+            yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "impersonate": target})
+            _IMPERSONATE_STATE["target"] = target
+        except Exception:
+            _IMPERSONATE_STATE["target"] = None
+    return _IMPERSONATE_STATE["target"]
+
+
+def _resilient_network_opts() -> Dict[str, Any]:
+    """_network_opts() + hardening applied to every attempt: force IPv4 egress
+    (broken IPv6 reads as 'connection refused') and accept odd legacy TLS."""
+    opts = dict(_network_opts())
+    opts["source_address"] = "0.0.0.0"
+    opts["legacy_server_connect"] = True
+    return opts
+
+
+def _extract_with_resilience(opts: Dict[str, Any], url: str,
+                             download: bool = False) -> Optional[Dict[str, Any]]:
+    """yt-dlp extraction behind a client-persona retry ladder.
+
+    Rung 1 — hardened base options (IPv4, legacy-TLS tolerance).  Rung 2 — plus
+    browser TLS impersonation for servers that reject non-browser clients (and
+    for 403 bot-walls). A non-connection error (unsupported URL, DRM, …) stops
+    the climb immediately — no persona fixes those. The caller's *opts* always
+    win (format selection, outtmpl, hooks…).
+    """
+    base = _resilient_network_opts()
+    rungs: List[Dict[str, Any]] = [dict(base)]
+    target = _get_impersonate_target()
+    if target is not None:
+        rungs.append({**base, "impersonate": target})
+    first_error: Optional[Exception] = None
+    last_error: Optional[Exception] = None
+    for rung in rungs:
+        rung.update(opts)
+        try:
+            with yt_dlp.YoutubeDL(rung) as ydl:
+                return ydl.extract_info(url, download=download)
+        except Exception as e:
+            if first_error is None:
+                first_error = e
+            last_error = e
+            if not _refused_connection(e):
+                break                      # deterministic failure — stop climbing
+            if "impersonate" in rung:
+                _IMPERSONATE_STATE["target"] = None   # persona rejected too
+    raise last_error or first_error or RuntimeError("Extraction failed.")
+
 
 # YouTube thumbnail ladder (img.youtube.com), highest first.
 YT_THUMB_SIZES = [
@@ -225,8 +477,70 @@ def _cleanup_interrupted_downloads() -> None:
         pass
 
 
+def _maybe_auto_update_ytdlp() -> None:
+    """Refresh yt-dlp at boot so extractor patches are never stale.
+
+    pip-installed yt-dlp refuses ``-U``, so we upgrade the package instead. Set
+    ``YTMAX_AUTOUPDATE_YTDLP=1`` (the Dockerfile does) to enable.
+    """
+    if not YTDLP_AUTO_UPDATE:
+        return
+    before = _ytdlp_version()
+    print(f"[yt-dlp] auto-update enabled - refreshing extractors (installed: {before})")
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--no-cache-dir", "--upgrade", "yt-dlp"],
+            capture_output=True, text=True, timeout=600,
+        )
+    except Exception as exc:
+        print(f"[yt-dlp] auto-update could not run (continuing as-is): {exc}")
+        return
+    after = _ytdlp_version()
+    if proc.returncode == 0:
+        print(f"[yt-dlp] extractors up to date: {before} -> {after}")
+    else:
+        print(f"[yt-dlp] auto-update returned {proc.returncode}; staying on {after}")
+
+
+def _audit_extractors() -> None:
+    """Confirm the high-traffic sites resolve to yt-dlp's NATIVE extractors
+    (no custom scraping), including the X/Twitter endpoint."""
+    try:
+        from yt_dlp.extractor import gen_extractor_classes
+    except Exception:
+        return
+    wanted = ("youtube", "twitter", "instagram", "tiktok", "facebook", "reddit")
+    found = set()
+    for ie in gen_extractor_classes():
+        key = (ie.ie_key() or "").lower()
+        for w in wanted:
+            if w in key:
+                found.add(w)
+    absent = sorted(set(wanted) - found)
+    print(f"[extractors] native coverage: {sorted(found)}")
+    if absent:
+        print(f"[extractors] WARNING: no native extractor for {absent} - "
+              f"set YTMAX_AUTOUPDATE_YTDLP=1 to refresh yt-dlp")
+
+
+def _log_startup() -> None:
+    print(f"[ffmpeg] {FFMPEG_VERSION}")
+    print(f"[ffmpeg] binary: {FFMPEG_EXE} "
+          f"(muxing {'available' if FFMPEG_AVAILABLE else 'UNAVAILABLE - quality will be capped!'})")
+    print(f"[yt-dlp] version: {_ytdlp_version()}")
+    if COOKIES_CONFIGURED:
+        print(f"[cookies] configured -> {COOKIES_FILE}")
+    else:
+        print("[cookies] NOT configured - auth-walled videos will fail. Set YTMAX_COOKIES_FILE.")
+    print(f"[network] proxy: {'configured' if PROXY_URL else 'direct'} | "
+          f"sleep {SLEEP_INTERVAL}-{MAX_SLEEP_INTERVAL}s")
+
+
 _load_persisted_state()
 _cleanup_interrupted_downloads()
+_log_startup()
+_maybe_auto_update_ytdlp()
+_audit_extractors()
 
 
 # ---------------------------------------------------------------------------
@@ -264,59 +578,393 @@ def format_bytes(b: Optional[float]) -> str:
     return f"{int(b)} B"
 
 
-def normalize_media_url(raw: str) -> Optional[str]:
-    """Accept any http(s) link; the extractor engine decides if it's supported."""
-    url = raw.strip()
-    if not url:
+_URL_IN_TEXT_RE = re.compile(r"https?://[^\s\"'<>]+", re.I)
+_EMBED_SRC_RE = re.compile(r"<(?:iframe|video|source|embed)[^>]*?\bsrc\s*=\s*[\"']([^\"']+)[\"']", re.I)
+_ANCHOR_HREF_RE = re.compile(r"<a[^>]*?\bhref\s*=\s*[\"']([^\"']+)[\"']", re.I)
+_DATA_SRC_RE = re.compile(r"\bdata-(?:src|video-url|embed-url)\s*=\s*[\"']([^\"']+)[\"']", re.I)
+
+
+# Wrapper / unblocker patterns: the real destination hides in a query param
+# (`url=`, `target=`, `__cpo=`, `dest=`…) — often percent- or base64-encoded, and
+# common to web-based unblockers broadly, not tied to any single service.
+_PROXY_PARAM_KEYS = {
+    "url", "uri", "u", "target", "dest", "destination", "link", "goto", "go",
+    "redirect", "redirect_url", "redirect_uri", "redir", "r", "to", "out",
+    "continue", "next", "view", "file", "video", "src", "source", "q", "query",
+    "address", "addr", "__cpo", "cpo", "encoded_url", "encodedurl", "real_url",
+    "actual_url", "decoded", "decode",
+}
+# Params that belong to the proxy session itself (tracking, service routing,
+# or the encoded-destination slot) — never copied onto the unwrapped URL.
+_PROXY_ONLY_PARAMS = _PROXY_PARAM_KEYS | {
+    "__cpUrl", "noSheath", "parentUrl", "refererUrl", "viaUrl", "proxyUrl",
+    "proxy_url", "proxy", "session", "sid", "sessionid", "session_id",
+    "token", "auth", "org", "referrer", "ref",
+}
+# Ad/tracker params — dropped from the reconstructed URL wherever they appear
+# (wrapper leftovers or riding along on the destination itself).
+_TRACKING_PARAM_RE = re.compile(
+    r"^(?:utm_[a-z0-9_]+|gclid|fbclid|msclkid|dclid|twclid|igshid|"
+    r"mc_cid|mc_eid|_hsenc|_hsmi|vero_id|s_kwcid)$", re.I)
+_MAX_UNWRAP_DEPTH = 4
+
+
+def _as_absolute_url(text: str) -> Optional[str]:
+    """Normalise a candidate into an absolute http(s) URL, or None."""
+    text = html.unescape(text or "").strip().strip("\"'")
+    if not text:
         return None
-    if "://" not in url:
-        url = "https://" + url
+    if text.startswith("//"):
+        text = "https:" + text
+    if "://" not in text:
+        first = re.split(r"[/?#]", text, 1)[0]
+        if "." not in first or " " in text:
+            return None
+        text = "https://" + text
+    if not text.lower().startswith(("http://", "https://")):
+        return None
     try:
-        host = (urlparse(url).hostname or "").lower()
+        host = (urlparse(text).hostname or "").lower()
     except ValueError:
         return None
     if not host or "." not in host:
         return None
-    return url
+    return text
 
 
-def _clean_error(exc: Exception) -> str:
+def _b64_decode_maybe(value: str) -> Optional[str]:
+    """Best-effort base64 (standard or URL-safe) decode into printable text."""
+    if not value or len(value) < 8:
+        return None
+    candidate = value.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_+/=-]+", candidate):
+        return None
+    padded = candidate + "=" * (-len(candidate) % 4)
+    for decoder in (base64.urlsafe_b64decode, base64.b64decode):
+        try:
+            raw = decoder(padded)
+        except (binascii.Error, ValueError):
+            continue
+        try:
+            decoded = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        if decoded.strip() and decoded.isprintable():
+            return decoded
+    return None
+
+
+def _decode_destination(value: str) -> tuple:
+    """Decode a query value into ``(destination_url, was_encoded)``."""
+    if not value:
+        return None, False
+    raw = html.unescape(value).strip().strip("\"'")
+    encoded = "%3a" in raw.lower() or "%2f" in raw.lower()
+    val = raw
+    for _ in range(2):                 # peel double-encoding
+        decoded = unquote(val)
+        if decoded == val:
+            break
+        val = decoded
+    b64 = _b64_decode_maybe(raw) or _b64_decode_maybe(val)
+    if b64:
+        encoded = True
+    for cand in [val] + ([b64, unquote(b64)] if b64 else []):
+        absolute = _as_absolute_url(cand)
+        if absolute:
+            return absolute, encoded
+    return None, False
+
+
+def _unwrap_proxy_url(url: str) -> Optional[str]:
+    """If *url* is an unblocker/wrapper, return the destination URL inside it."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+    pairs: List[tuple] = []
+    for source in (parsed.query, parsed.fragment):
+        if source:
+            try:
+                pairs.extend(parse_qsl(source, keep_blank_values=True))
+            except ValueError:
+                pass
+    for key, val in pairs:
+        candidate, was_encoded = _decode_destination(val)
+        if not candidate or candidate == url:
+            continue
+        # Unwrap when the param is destination-like, or when the value was clearly
+        # encoded — so a literal `?ref=https://partner` stays untouched.
+        if key.lower() in _PROXY_PARAM_KEYS or was_encoded:
+            return _rebuild_destination_url(url, key, candidate)
+    # Some services hide the destination in a base64 path segment or fragment.
+    for source in (parsed.path, parsed.fragment):
+        for part in re.split(r"[/?&=]", source):
+            if len(part) >= 12:
+                candidate, was_encoded = _decode_destination(part)
+                if candidate and candidate != url and was_encoded:
+                    return _rebuild_destination_url(url, "", candidate)
+    return None
+
+
+def _rebuild_destination_url(wrapper_url: str, unwrap_key: str,
+                             destination: str) -> str:
+    """Re-attach the wrapper's *non-proxy* query params to the destination.
+
+    A wrapper like ``https://185.x.x.x/watch?v=ID&__cpo=<encoded-youtube.com>``
+    must reconstruct to ``https://youtube.com/watch?v=ID`` — not to a bare
+    ``https://youtube.com``. When the decoded destination is a bare domain (no
+    path of its own), the wrapper's path carries over too — those wrappers
+    mirror the real path on the proxy host. Every original query param survives
+    except proxy-control ones: the key that triggered the unwrap itself, other
+    destination slots, obvious session/tracking params, and ad-tracker params
+    (``utm_*``, ``gclid``…), which are dropped wherever they appear. Exact
+    duplicate ``key=value`` pairs are de-duplicated. Values are double-unquoted
+    because wrapper operators routinely double-encode them. The wrapper's
+    fragment is carried over untouched.
+    """
+    try:
+        wrapper = urlparse(wrapper_url)
+        dest = urlparse(destination)
+    except ValueError:
+        return destination
+    if not dest.scheme:
+        return destination          # relative destination: nothing to merge onto
+    banned = {unwrap_key.lower()} if unwrap_key else set()
+    merged = parse_qsl(dest.query, keep_blank_values=True)
+    seen = set(merged)
+    for k, v in parse_qsl(wrapper.query, keep_blank_values=True):
+        if k.lower() in _PROXY_ONLY_PARAMS or k.lower() in banned:
+            continue
+        # Values may arrive double-encoded (``%2520`` → ``%20``); unquote twice
+        # so ``a%20b`` doesn't end up literal in the destination URL.
+        v = unquote(unquote(v))
+        if (k, v) in seen:          # destination already carries the same pair
+            continue
+        seen.add((k, v))
+        merged.append((k, v))
+    host = (dest.hostname or "").lower()
+    merged = [(k, v) for k, v in merged
+              if not _TRACKING_PARAM_RE.match(k)
+              and not (k == "si" and host.endswith(("youtube.com", "youtu.be")))]
+    path = dest.path
+    if path in ("", "/") and wrapper.path not in ("", "/"):
+        path = wrapper.path         # bare-domain destination: adopt wrapper path
+    path = quote(path, safe="/%:@&+$,;=~*!'()[]-._")   # re-encode spaces etc.
+    dest_query = urlencode(merged)
+    if dest_query == dest.query and path == dest.path:
+        return destination
+    destination = urlunsplit((dest.scheme, dest.netloc, path, dest_query,
+                              dest.fragment))
+    if wrapper.fragment and not dest.fragment:
+        destination = destination + "#" + wrapper.fragment
+    return destination
+
+
+def extract_url_from_input(raw: str, _depth: int = 0) -> Optional[str]:
+    """Pull a usable URL out of *anything* a user pastes.
+
+    Handles bare share links, raw page URLs, and embed codes / snippets —
+    ``<iframe src="…">``, ``<video><source src="…">``, anchor tags, protocol
+    relative ``//cdn…`` sources, and plain prose that merely contains a link.
+
+    Also de-proxies unblocker/wrapper links: when the real destination hides in
+    a query param (``url=``, ``target=``, ``__cpo=``, ``dest=``…, often percent-
+    or base64-encoded), it decodes that URL and recursively re-extracts on it.
+    """
+    if not raw:
+        return None
+    text = html.unescape(raw).strip().strip("\"'")
+    if not text:
+        return None
+    if "<" in text and ">" in text:
+        for regex in (_EMBED_SRC_RE, _DATA_SRC_RE, _ANCHOR_HREF_RE):
+            m = regex.search(text)
+            if m and m.group(1).strip():
+                text = m.group(1).strip()
+                break
+    else:
+        m = _URL_IN_TEXT_RE.search(text)
+        if m:
+            text = m.group(0)
+    text = html.unescape(text).strip().rstrip(".,;)\"'")
+    absolute = _as_absolute_url(text)
+    if not absolute:
+        return None
+    # De-proxy: peel wrapper/unblocker links down to the real destination URL.
+    if _depth < _MAX_UNWRAP_DEPTH:
+        unwrapped = _unwrap_proxy_url(absolute)
+        if unwrapped and unwrapped != absolute:
+            return extract_url_from_input(unwrapped, _depth + 1)
+    return absolute
+
+
+def normalize_media_url(raw: str) -> Optional[str]:
+    """Accept any http(s) link, embed snippet or page URL; the engine decides support."""
+    return extract_url_from_input(raw)
+
+
+# ---------------------------------------------------------------------------
+# Multi-input routing: embedded-media discovery + playlist/channel detection
+# ---------------------------------------------------------------------------
+_EMBED_VIDEO_HOSTS = (
+    "youtube.com/embed/", "youtube-nocookie.com/embed/", "player.vimeo.com/video/",
+    "dailymotion.com/embed/", "facebook.com/plugins/video", "twitch.tv/videos/",
+    "streamable.com/e/", "rumble.com/embed/", "bitchute.com/embed/",
+    "brighteon.com/embed/", "ok.ru/videoembed/", "vk.com/video_ext.php",
+)
+
+
+def is_playlist_or_channel_url(url: str) -> bool:
+    """Batch inputs: YouTube playlists/channels plus generic playlist-ish pages."""
+    try:
+        p = urlparse(url)
+    except ValueError:
+        return False
+    host = (p.hostname or "").lower()
+    path = p.path
+    query = p.query.lower()
+    if "youtube.com" in host or "youtu.be" in host:
+        if _is_yt_channel_url(url):
+            return True
+        if path.startswith("/playlist") or "list=" in query:
+            return True
+    if re.search(r"/(playlists?|sets|channel|c|user|@[^/]+)(/|$)", path, re.I):
+        return True
+    if "list=" in query or "playlist=" in query:
+        return True
+    return False
+
+
+def _embedded_media_urls(page: Optional[str], page_url: str) -> List[str]:
+    """Discover embedded video/manifest URLs on a raw web page.
+
+    Covers iframe/player embeds, native <video>/<source> tags, lazy data-src
+    attributes, and og:video/twitter:player meta tags — so a page whose primary
+    content is an article still yields its embedded video.
+    """
+    if not page:
+        return []
+    found: List[str] = []
+
+    def add(cand: str) -> None:
+        if not cand:
+            return
+        cand = html.unescape(cand).strip()
+        if not cand or cand.startswith(("data:", "blob:", "javascript:")):
+            return
+        if cand.startswith("//"):
+            cand = "https:" + cand
+        if not cand.startswith("http"):
+            try:
+                cand = urljoin(page_url, cand)
+            except ValueError:
+                return
+        if not cand.startswith("http"):
+            return
+        lowered = cand.lower()
+        if (
+            any(h in lowered for h in _EMBED_VIDEO_HOSTS)
+            or re.search(r"\.(m3u8|mpd)(\?|#|$)", lowered)
+            or re.search(r"\.(mp4|webm|m4v|mov|mkv)(\?|#|$)", lowered)
+        ):
+            if cand not in found:
+                found.append(cand)
+
+    patterns = (
+        re.compile(r"<(?:iframe|video|source|embed)[^>]*?\bsrc\s*=\s*[\"']([^\"']+)[\"']", re.I),
+        re.compile(r"\bdata-(?:src|video-url|embed-url)\s*=\s*[\"']([^\"']+)[\"']", re.I),
+        re.compile(r'<meta[^>]+(?:property|name)=["\'](?:og:video(?::(?:url|secure_url))?|twitter:player)["\'][^>]+content=["\']([^"\']+)', re.I),
+        re.compile(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\'](?:og:video(?::(?:url|secure_url))?|twitter:player)["\']', re.I),
+    )
+    for regex in patterns:
+        for m in regex.finditer(page):
+            add(m.group(1))
+    return found
+
+
+def _clean_error(exc: Exception, cookies_configured: Optional[bool] = None) -> str:
+    """Human, actionable errors. Distinguishes the auth-wall class from the
+    IP-block/bot-check class, because the two need different fixes."""
     msg = str(exc).strip()
     msg = re.sub(r"^ERROR:\s*", "", msg)
     lowered = msg.lower()
+    if cookies_configured is None:
+        cookies_configured = COOKIES_CONFIGURED
+
     if "is not a valid url" in lowered or "unsupported url" in lowered:
-        return "Unsupported or invalid link — the press could not read it. Paste a direct media page URL."
+        return "Unsupported or invalid link — the press could not read it. Paste a media page URL, a share link, or an embed snippet."
+
+    # ---- IP-block / bot-check class (NOT fixed by cookies) ------------------
+    if any(k in lowered for k in (
+        "confirm you're not a bot", "confirm you are not a bot", "not a bot", "bot check",
+    )):
+        return (
+            "YouTube asked this server to prove it is not a bot (a datacenter-IP block, "
+            "which is separate from the login wall). Fix it one of two ways: (a) attach "
+            "cookies.txt via YTMAX_COOKIES_FILE, and/or (b) route traffic through a "
+            "residential proxy with YTMAX_PROXY. See docs/RENDER_DEPLOY.md → "
+            "“Anti-bot & IP blocks”."
+        )
+
+    # ---- Auth-wall class (login / members-only / subscription / age) --------
+    auth_markers = (
+        "login required", "log in", "sign in", "requires a login", "logged-in",
+        "authentication", "members-only", "members only", "join this channel",
+        "requires payment", "paid members", "premium", "subscription",
+        "age-restricted", "age restricted", "confirm your age", "this video requires",
+    )
+    if any(k in lowered for k in auth_markers):
+        if not cookies_configured:
+            return (
+                "This video requires a signed-in session (login / members-only / "
+                "subscription / age-restricted) and this server has NO cookies configured, "
+                "so it is being turned away. Export cookies.txt from a logged-in browser and "
+                "set YTMAX_COOKIES_FILE (on Render: add it as a Secret File). Full steps: "
+                "docs/RENDER_DEPLOY.md → “Unlock authenticated videos”."
+            )
+        return (
+            "This video requires a signed-in session and the configured cookies were "
+            "rejected — they may be expired, from the wrong account, or missing this "
+            "site. Re-export cookies.txt and update YTMAX_COOKIES_FILE / the Secret File."
+        )
+
     if "video unavailable" in lowered or "not available" in lowered:
         return "Media unavailable — it may be private, region-locked, or removed."
     if "private video" in lowered or "private post" in lowered:
         return "This media is private and cannot be downloaded."
     if "empty media response" in lowered or "no media found" in lowered or "no media" in lowered:
-        return "No downloadable media found here — the post may need a logged-in browser session (see Machine Settings → Browser cookies) or may have been removed."
+        return "No downloadable media found here — the post may need a logged-in session (configure cookies, see docs/RENDER_DEPLOY.md) or may have been removed."
     if "no video formats found" in lowered:
-        return "This post has no video stream — if it is an image post, the images are offered automatically. Otherwise the source may need a logged-in browser session (Machine Settings → Browser cookies)."
+        return "This post has no video stream — if it is an image post, the images are offered automatically. Otherwise the source may need cookies (see docs/RENDER_DEPLOY.md)."
     if "no video could be found" in lowered:
-        return "This X post has no extractable video stream. If it is a photo post, the images are offered automatically — otherwise videos may need a logged-in browser session (Machine Settings → Browser cookies)."
+        return "This X post has no extractable video stream. If it is a photo post, the images are offered automatically — otherwise videos may need cookies (see docs/RENDER_DEPLOY.md)."
     if "http error 404" in lowered:
         return "That file no longer exists at this address (404) — try a fresh link."
     if "http error 403" in lowered or "forbidden" in lowered:
-        return "The source refused the request (403) — this media likely needs a logged-in browser session (Machine Settings → Browser cookies)."
+        return "The source refused the request (403) — this media likely needs a logged-in session (configure cookies, see docs/RENDER_DEPLOY.md)."
     if "http error 429" in lowered or "too many requests" in lowered:
-        return "The source is rate-limiting right now — wait a few minutes and try again."
-    if "connection aborted" in lowered or "connection reset" in lowered or "timed out" in lowered or "connection refused" in lowered:
-        return "The source refused the connection right now — try again in a moment."
-    if any(k in lowered for k in ("login required", "log in", "sign in", "authentication", "requires a login", "logged-in")):
-        return "This link requires a login — enable the Browser cookies session in Machine Settings to use your logged-in account."
+        return "The source is rate-limiting this server's IP — wait a few minutes, or set YTMAX_PROXY to route around a blocked IP range."
+    if any(k in lowered for k in ("connection aborted", "connection reset", "timed out", "connection refused")):
+        return "The source refused the connection right now — the server's network path to this site was rejected. Try again, or set YTMAX_PROXY to route through a different IP range."
     if any(k in lowered for k in ("drm", "playready", "widevine", "fairplay")):
         return "DRM-protected stream — copy-protected content cannot be saved."
-    if "confirm you're not a bot" in lowered or "bot check" in lowered:
-        return "The source is running a bot check right now. Wait a few minutes and try again."
     if "unsupported audio format" in lowered or "unsupported video format" in lowered:
         return "That media format is not supported — for audio pick MP3, M4A, WAV or FLAC."
     if "unsupported" in lowered:
-        return "This site or link type is not supported yet. Try a direct media page URL."
+        return "This site or link type is not supported yet. Try a direct media page URL or an embed snippet."
     if len(msg) > 420:
         msg = msg[:420] + "…"
     return msg
+
+
+def _is_permanent_error(msg: str) -> bool:
+    """Errors that retrying cannot fix (retry only wastes time and bandwidth)."""
+    lowered = msg.lower()
+    return any(k in lowered for k in (
+        "unsupported", "drm", "private", "no longer exists at this address",
+        "requires a signed-in session", "no cookies configured", "invalid link",
+    ))
 
 
 def _is_embed_error(msg: str) -> bool:
@@ -409,9 +1057,17 @@ def _ext_of(url: str) -> str:
 
 
 def _http_get(url: str, timeout: float = 12.0, max_bytes: int = 900_000) -> Optional[str]:
+    """Raw page fetch with the same client-persona ladder as yt-dlp: browser
+    persona first (curl_cffi), plain urllib fallback (proxy-compatible)."""
+    r = _curl_get(url, timeout)
+    try:
+        if r is not None and r.status_code < 400:
+            return r.text[:max_bytes]
+    except Exception:
+        pass
     try:
         req = urllib.request.Request(url, headers={"User-Agent": DEFAULT_UA})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _URL_OPENER.open(req, timeout=timeout) as resp:
             return resp.read(max_bytes).decode("utf-8", errors="replace")
     except Exception:
         return None
@@ -421,12 +1077,12 @@ def _probe_url(url: str, timeout: float = 6.0) -> bool:
     """Cheap reachability check (HEAD, then GET fallback)."""
     try:
         req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": DEFAULT_UA})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _URL_OPENER.open(req, timeout=timeout) as resp:
             return resp.status < 400
     except Exception:
         try:
             req = urllib.request.Request(url, headers={"User-Agent": DEFAULT_UA})
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with _URL_OPENER.open(req, timeout=timeout) as resp:
                 return resp.status < 400
         except Exception:
             return False
@@ -491,11 +1147,27 @@ def _upgrade_avatar_url(url: str) -> str:
     return url
 
 
+def _cookies_configured(cookies_browser: Optional[str] = None) -> bool:
+    """True when *some* authenticated session (browser profile or cookies.txt) is available."""
+    return bool(cookies_browser) or COOKIES_CONFIGURED
+
+
 def _cookies_opts(cookies_browser: Optional[str]) -> Dict[str, Any]:
-    """Optional logged-in browser session for login-walled posts (IG, X, FB, LinkedIn…)."""
-    if not cookies_browser:
-        return {}
-    return {"cookiesfrombrowser": (cookies_browser,)}
+    """Attach an authenticated session to yt-dlp.
+
+    Priority:
+      1. an explicit browser profile (local machines only — production has no browser), then
+      2. the Netscape ``cookies.txt`` configured via ``YTMAX_COOKIES_FILE`` / Secret File.
+
+    The cookie file is what makes a deployed instance behave exactly like a local
+    one for login-walled, age-restricted and members-only videos.
+    """
+    opts: Dict[str, Any] = {}
+    if cookies_browser:
+        opts["cookiesfrombrowser"] = (cookies_browser,)
+    if COOKIES_FILE:
+        opts["cookiefile"] = COOKIES_FILE
+    return opts
 
 
 def _is_yt_channel_url(url: str) -> bool:
@@ -696,7 +1368,7 @@ def _pinterest_image_fallback(url: str) -> Optional[Dict[str, Any]]:
             "User-Agent": DEFAULT_UA,
             "X-Pinterest-PWS-Handler": "www/[username].js",
         })
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        with _URL_OPENER.open(req, timeout=20) as resp:
             payload = json.loads(resp.read(1_500_000).decode("utf-8", "replace"))
     except Exception:
         return None
@@ -1088,6 +1760,7 @@ def _build_common_opts(
         "buffersize": 1024 * 1024,
         "progress_hooks": [make_yt_hook(task_id)],
     }
+    opts.update(_network_opts())
     opts.update(_cookies_opts(cookies_browser))
     if rate_limit_mbps and rate_limit_mbps > 0:
         opts["ratelimit"] = int(rate_limit_mbps * 1024 * 1024)
@@ -1147,6 +1820,83 @@ def _pretty_source(extractor_key: str, extractor: str, info: Dict[str, Any]) -> 
     return "DIRECT LINK"
 
 
+def _analyze_playlist(url: str, req: AnalyzeRequest) -> Optional[Dict[str, Any]]:
+    """Batch listing for a playlist / channel URL (per-item download happens later)."""
+    opts: Dict[str, Any] = {
+        "ffmpeg_location": FFMPEG_EXE,
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": False,
+        "extract_flat": "in_playlist",   # cheap listing; full extraction happens per item
+        "extractor_retries": 3,
+        "socket_timeout": 30,
+    }
+    opts.update(_network_opts())
+    opts.update(_cookies_opts(req.cookies_browser))
+    try:
+        info = _extract_with_resilience(opts, url, download=False)
+    except Exception:
+        return None
+    if not info or info.get("_type") != "playlist":
+        return None
+
+    entries: List[Dict[str, Any]] = []
+    for i, e in enumerate(info.get("entries") or [], start=1):
+        if not isinstance(e, dict):
+            continue
+        eurl = e.get("url") or e.get("webpage_url") or ""
+        if not eurl.startswith("http"):
+            # Flat extraction often yields a bare video id (YouTube) — rebuild a URL.
+            vid = str(e.get("id") or eurl or "")
+            if re.fullmatch(r"[A-Za-z0-9_-]{11}", vid):
+                eurl = f"https://www.youtube.com/watch?v={vid}"
+            else:
+                eurl = e.get("webpage_url") or ""
+        if not eurl.startswith("http"):
+            continue
+        dur = e.get("duration")
+        entries.append({
+            "index": i,
+            "url": eurl,
+            "title": e.get("title") or f"Item {i}",
+            "thumbnail": e.get("thumbnail") or "",
+            "duration": dur or 0,
+            "duration_str": format_eta(dur) if dur else "--:--",
+            "uploader": e.get("uploader") or e.get("channel") or "",
+        })
+    if not entries:
+        return None
+
+    view_count = info.get("view_count")
+    art: List[Dict[str, Any]] = _yt_channel_art(info) if _is_yt_channel_url(url) else []
+    return {
+        "url": url,
+        "title": info.get("title") or "Playlist",
+        "duration": 0,
+        "duration_str": f"{len(entries)} items",
+        "thumbnail": info.get("thumbnail") or entries[0]["thumbnail"],
+        "uploader": info.get("uploader") or info.get("channel") or "Playlist",
+        "view_count": view_count or 0,
+        "view_count_str": f"{view_count:,}" if view_count else "N/A",
+        "is_live": False,
+        "source": _pretty_source(info.get("extractor_key") or "", info.get("extractor") or "", info),
+        "extractor_key": info.get("extractor_key") or "",
+        "highest_res_height": 0,
+        "highest_res_label": f"{len(entries)} item playlist",
+        "media_kind": "playlist",
+        "is_profile": False,
+        "is_playlist": True,
+        "has_video": True,
+        "has_audio": True,
+        "video_formats": [],
+        "audio_formats": [],
+        "images": art,
+        "image_count": len(art),
+        "playlist_count": len(entries),
+        "entries": entries,
+    }
+
+
 @app.post("/api/analyze")
 def analyze_video(req: AnalyzeRequest):
     url = normalize_media_url(req.url)
@@ -1195,6 +1945,12 @@ def analyze_video(req: AnalyzeRequest):
 
     hunt = req.mode if req.mode in ("video", "image") else "video"
 
+    # Playlists / channels → batch listing (batch extraction).
+    if hunt == "video" and is_playlist_or_channel_url(url):
+        playlist = _analyze_playlist(url, req)
+        if playlist:
+            return playlist
+
     is_profile_guess = _is_yt_channel_url(url) or _is_profile_url(url)
     profile_page = _http_get(url) if is_profile_guess else None
     profile_art = _profile_art_from_page(profile_page)
@@ -1207,28 +1963,26 @@ def analyze_video(req: AnalyzeRequest):
         "extract_flat": False,
         "extractor_retries": 3,
     }
+    ydl_opts.update(_network_opts())
     ydl_opts.update(_cookies_opts(req.cookies_browser))
-    if is_profile_guess:
-        # Profile pages are big playlists — one entry is enough to characterise them.
-        ydl_opts["playlist_items"] = "1"
 
-    def _try_extract(target_url: str):
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            return ydl.extract_info(target_url, download=False)
+    def _try_extract(extract_opts: Dict[str, Any], target_url: str):
+        """Resilient extraction of one candidate plus the per-site transient
+        retries: Reddit-style 429 backoff and the Vimeo embed-endpoint fallback.
+        Returns ``(info, first_error)`` — exactly one is usable."""
+        try:
+            return _extract_with_resilience(extract_opts, target_url, download=False), None
+        except Exception as e:
+            first_error = e
 
-    try:
-        info = _try_extract(url)
-    except Exception as e:
-        first_error = e
-        first_reason = _clean_error(e)
         retried_info = None
 
         # Reddit's public JSON endpoint rate-limits per-IP; one short backoff
         # retry clears most transient 429s instead of failing outright.
-        if "429" in str(e) or "too many requests" in str(e).lower():
+        if "429" in str(first_error) or "too many requests" in str(first_error).lower():
             time.sleep(4)
             try:
-                retried_info = _try_extract(url)
+                retried_info = _extract_with_resilience(extract_opts, target_url, download=False)
             except Exception:
                 retried_info = None
 
@@ -1236,45 +1990,79 @@ def analyze_video(req: AnalyzeRequest):
         # that the player.vimeo.com embed endpoint often does not — retry
         # through the embed URL before giving up on a real video result.
         if retried_info is None:
-            host = (urlparse(url).hostname or "").lower()
+            host = (urlparse(target_url).hostname or "").lower()
             if "vimeo.com" in host and "player.vimeo.com" not in host:
-                vid_match = re.search(r"vimeo\.com/(?:video/)?(\d+)", url)
+                vid_match = re.search(r"vimeo\.com/(?:video/)?(\d+)", target_url)
                 if vid_match:
                     embed_url = f"https://player.vimeo.com/video/{vid_match.group(1)}"
                     try:
-                        retried_info = _try_extract(embed_url)
+                        retried_info = _extract_with_resilience(extract_opts, embed_url, download=False)
                     except Exception:
                         retried_info = None
 
         if retried_info is not None:
-            info = retried_info
-        else:
-            if is_profile_guess and profile_art:
-                return _profile_only_result(url, profile_art, profile_page)
+            return retried_info, None
+        return None, first_error
 
-            fallback = (
-                _post_image_fallback(url)
-                or _pinterest_image_fallback(url)
-                or _pinterest_page_fallback(url)
-                or _generic_page_image_fallback(url)
-            )
-            # Only pass off a silent image swap when the source genuinely has
-            # no video (a real image post). Auth walls, bot checks, rate
-            # limits and impersonation failures get surfaced as real errors
-            # instead of being disguised as a successful image result.
-            genuinely_image_only = any(
-                k in str(first_error).lower()
-                for k in ("no video formats found", "no video could be found", "no media found")
-            )
-            if fallback and genuinely_image_only:
-                return fallback
-            if fallback:
-                fallback["fallback_reason"] = first_reason
-                return fallback
-            raise HTTPException(status_code=500, detail=first_reason)
+    # Multi-input routing: try the URL itself first; if it is a raw web page or an
+    # embed wrapper, fall back to the media embedded inside it (iframe / <video> /
+    # og:video / manifest) — so a video that is not the page's primary content still
+    # resolves, and a whole embed snippet resolves to its player URL.
+    pending: List[str] = [url]
+    seen_candidates: set = set()
+    info: Optional[Dict[str, Any]] = None
+    last_error: Optional[Exception] = None
+
+    while pending and info is None:
+        candidate = pending.pop(0)
+        if candidate in seen_candidates:
+            continue
+        seen_candidates.add(candidate)
+        cand_is_profile = _is_yt_channel_url(candidate) or _is_profile_url(candidate)
+        cand_opts = dict(ydl_opts)
+        if cand_is_profile:
+            # Profile pages are big playlists — one entry is enough to characterise them.
+            cand_opts["playlist_items"] = "1"
+        info, cand_error = _try_extract(cand_opts, candidate)
+        if info:
+            url = candidate
+            is_profile_guess = cand_is_profile
+            break
+        info = None
+        last_error = cand_error or RuntimeError("Media information could not be retrieved.")
+        if len(seen_candidates) < 4:
+            for embedded in _embedded_media_urls(_http_get(candidate), candidate)[:3]:
+                if embedded not in seen_candidates and embedded not in pending:
+                    pending.append(embedded)
 
     if not info:
-        raise HTTPException(status_code=404, detail="Media information could not be retrieved.")
+        e = last_error or RuntimeError("Media information could not be retrieved.")
+        if is_profile_guess and profile_art:
+            return _profile_only_result(url, profile_art, profile_page)
+
+        fallback = (
+            _post_image_fallback(url)
+            or _pinterest_image_fallback(url)
+            or _pinterest_page_fallback(url)
+            or _generic_page_image_fallback(url)
+        )
+        # Only pass off a silent image swap when the source genuinely has
+        # no video (a real image post). Auth walls, bot checks, rate
+        # limits and impersonation failures get surfaced as real errors
+        # instead of being disguised as a successful image result.
+        genuinely_image_only = any(
+            k in str(e).lower()
+            for k in ("no video formats found", "no video could be found", "no media found")
+        )
+        if fallback and genuinely_image_only:
+            return fallback
+        if fallback:
+            fallback["fallback_reason"] = _clean_error(e, _cookies_configured(req.cookies_browser))
+            return fallback
+        raise HTTPException(
+            status_code=500,
+            detail=_clean_error(e, _cookies_configured(req.cookies_browser)),
+        )
 
     title = info.get("title", "Unknown Title")
     duration = info.get("duration", 0)
@@ -1450,6 +2238,14 @@ def _fail_task(task_id: str, message: str) -> None:
             task["error"] = message
 
 
+def _set_status(task_id: str, status: str, message: str) -> None:
+    with _lock:
+        task = tasks.get(task_id)
+        if task:
+            task["status"] = status
+            task["status_msg"] = message
+
+
 def execute_download(task_id: str, req: DownloadRequest) -> None:
     task_dir = os.path.join(STAGING_ROOT, task_id)
     os.makedirs(task_dir, exist_ok=True)
@@ -1460,24 +2256,37 @@ def execute_download(task_id: str, req: DownloadRequest) -> None:
                 _run_direct_download(task_id, req, task_dir)
             else:
                 _run_multi_image_download(task_id, req, task_dir)
+        elif req.kind == "playlist":
+            _run_playlist_download(task_id, req, task_dir)
         else:
-            for attempt in (1, 2):
+            # Retry chain with exponential backoff; permanent failures short-circuit.
+            last_exc: Optional[Exception] = None
+            max_attempts = 3
+            for attempt in range(1, max_attempts + 1):
                 try:
                     _run_download(task_id, req, task_dir)
+                    last_exc = None
                     break
                 except Exception as e:
-                    err = _clean_error(e)
-                    if attempt == 1 and _is_embed_error(err):
-                        with _lock:
-                            task = tasks.get(task_id)
-                            if task:
-                                task["status"] = "downloading"
-                                task["status_msg"] = "Retrying without artwork embedding…"
+                    last_exc = e
+                    err = _clean_error(e, _cookies_configured(req.cookies_browser))
+                    # Artwork/metadata embedding fails on some odd containers — drop it and retry.
+                    if _is_embed_error(err) and (req.embed_thumbnail or req.embed_metadata):
+                        _set_status(task_id, "downloading", "Retrying without artwork embedding…")
                         req = req.model_copy(update={"embed_thumbnail": False, "embed_metadata": False})
                         continue
-                    raise
+                    if _is_permanent_error(err) or attempt == max_attempts:
+                        raise
+                    delay = min(8, 2 ** (attempt - 1))
+                    _set_status(
+                        task_id, "downloading",
+                        f"Transient error — retrying in {delay}s (attempt {attempt + 1}/{max_attempts})…",
+                    )
+                    time.sleep(delay)
+            if last_exc is not None:
+                raise last_exc
     except Exception as e:
-        err = _clean_error(e)
+        err = _clean_error(e, _cookies_configured(req.cookies_browser))
         with _lock:
             task = tasks.get(task_id)
             if task:
@@ -1486,6 +2295,127 @@ def execute_download(task_id: str, req: DownloadRequest) -> None:
         return
 
     _finalize(task_id, task_dir, req)
+
+
+def _manifest_url_from_info(info: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Find the HLS/DASH manifest URL inside a yt-dlp info dict."""
+    if not info:
+        return None
+    mu = info.get("manifest_url")
+    if isinstance(mu, str) and mu.startswith("http"):
+        return mu
+    for f in info.get("formats") or []:
+        proto = (f.get("protocol") or "").lower()
+        u = f.get("url") or ""
+        if not u.startswith("http"):
+            continue
+        ul = u.lower()
+        if "m3u8" in proto or ".m3u8" in ul or "dash" in proto or ".mpd" in ul:
+            return u
+    return None
+
+
+def _manifest_url_from_page(url: str) -> Optional[str]:
+    """Fall-back discovery: scrape a page for an .m3u8 / .mpd reference."""
+    page = _http_get(url, max_bytes=2_000_000)
+    if not page:
+        return None
+    m = re.search(r"https?://[^\s\"'\\]+\.(?:m3u8|mpd)(?:\?[^\s\"'\\]*)?", page)
+    if m:
+        return m.group(0).replace("\\/", "/")
+    m = re.search(r"[^\s\"'\\/]+\.(?:m3u8|mpd)(?:\?[^\s\"'\\]*)?", page)
+    return html.unescape(m.group(0)).replace("\\/", "/") if m else None
+
+
+def _cookie_header_for(url: str) -> str:
+    """Best-effort Cookie header from cookies.txt, for ffmpeg's manifest fetch."""
+    if not COOKIES_FILE:
+        return ""
+    host = (urlparse(url).hostname or "").lower()
+    pairs: List[str] = []
+    try:
+        with open(COOKIES_FILE, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) < 7:
+                    continue
+                domain, _flag, _path, _secure, _expiry, name, value = parts[:7]
+                dom = domain.lstrip(".").lower()
+                if host == dom or host.endswith("." + dom):
+                    pairs.append(f"{name}={value}")
+    except OSError:
+        return ""
+    return "; ".join(pairs)
+
+
+def _download_via_manifest(task_id: str, req: DownloadRequest, task_dir: str) -> Optional[str]:
+    """Secondary extraction path: fetch the HLS/DASH manifest and stitch it with
+    ffmpeg (`-c copy`). Used when yt-dlp's own downloader fails outright."""
+    if req.audio_only:
+        return None
+    probe_opts: Dict[str, Any] = {
+        "ffmpeg_location": FFMPEG_EXE,
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "noplaylist": True,
+    }
+    probe_opts.update(_network_opts())
+    probe_opts.update(_cookies_opts(req.cookies_browser))
+    manifest: Optional[str] = None
+    try:
+        manifest = _manifest_url_from_info(
+            _extract_with_resilience(probe_opts, req.url, download=False))
+    except Exception:
+        manifest = None
+    if not manifest:
+        manifest = _manifest_url_from_page(req.url)
+    if not manifest:
+        return None
+    if not FFMPEG_AVAILABLE:
+        return None
+
+    _set_status(task_id, "downloading", "Primary extractor failed — stitching the manifest with FFmpeg…")
+    out_path = os.path.join(task_dir, "manifest-fallback.mp4")
+    cmd = [FFMPEG_EXE, "-hide_banner", "-loglevel", "error", "-y", "-user_agent", DEFAULT_UA]
+    cookie_header = _cookie_header_for(req.url)
+    if cookie_header:
+        cmd += ["-headers", f"Cookie: {cookie_header}\r\n"]
+    if req.referer:
+        cmd += ["-referer", req.referer]
+    cmd += ["-i", manifest, "-c", "copy", "-bsf:a", "aac_adtstoasc", out_path]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+        return None
+    return out_path
+
+
+def _run_playlist_download(task_id: str, req: DownloadRequest, task_dir: str) -> None:
+    """Batch download of a playlist / channel: every item, into one staging dir."""
+    _set_status(task_id, "downloading", "Fetching every item in the playlist…")
+    opts = _build_common_opts(task_id, req.concurrency, req.rate_limit_mbps, req.cookies_browser)
+    opts["noplaylist"] = False
+    opts["ignoreerrors"] = True          # one dead item must not kill the whole batch
+    opts["outtmpl"] = os.path.join(task_dir, "%(playlist_index)s - %(title)s [%(format_id)s].%(ext)s")
+    if req.audio_only:
+        audio_fmt = (req.audio_format or "mp3").lower()
+        if audio_fmt not in ALLOWED_AUDIO_FORMATS:
+            raise RuntimeError(f"Unsupported audio format: {audio_fmt}")
+        opts["format"] = "bestaudio/best"
+        opts["postprocessors"] = [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": audio_fmt,
+            "preferredquality": "320" if audio_fmt == "mp3" else "0",
+        }]
+    else:
+        opts["format"] = DEFAULT_VIDEO_FORMAT
+        opts["merge_output_format"] = "mp4"
+    _extract_with_resilience(opts, req.url, download=True)
 
 
 def _run_download(task_id: str, req: DownloadRequest, task_dir: str) -> None:
@@ -1502,9 +2432,9 @@ def _run_download(task_id: str, req: DownloadRequest, task_dir: str) -> None:
         "no_warnings": True,
         "noplaylist": True,
     }
+    precheck_opts.update(_network_opts())
     precheck_opts.update(_cookies_opts(req.cookies_browser))
-    with yt_dlp.YoutubeDL(precheck_opts) as ydl:
-        info = ydl.extract_info(req.url, download=False)
+    info = _extract_with_resilience(precheck_opts, req.url, download=False)
     if info and info.get("is_live"):
         raise RuntimeError("Live streams cannot be downloaded — wait until the stream ends, then retry.")
 
@@ -1542,13 +2472,19 @@ def _run_download(task_id: str, req: DownloadRequest, task_dir: str) -> None:
         if req.format_id and req.format_id != "highest":
             opts["format"] = f"{req.format_id}+bestaudio/bestvideo+bestaudio/best"
         else:
-            opts["format"] = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
+            # Manifest-first: best video + best audio as separate streams, muxed by ffmpeg.
+            opts["format"] = DEFAULT_VIDEO_FORMAT
         opts["merge_output_format"] = "mp4"
         if req.embed_metadata:
             opts["postprocessors"] = [{"key": "FFmpegMetadata", "add_metadata": True}]
 
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        ydl.extract_info(req.url, download=True)
+    try:
+        _extract_with_resilience(opts, req.url, download=True)
+    except Exception:
+        # Primary extraction failed → secondary method: manifest + ffmpeg stitch.
+        if _download_via_manifest(task_id, req, task_dir):
+            return
+        raise
 
 
 def _run_direct_download(task_id: str, req: DownloadRequest, task_dir: str) -> None:
@@ -1596,7 +2532,7 @@ def _run_direct_download(task_id: str, req: DownloadRequest, task_dir: str) -> N
     out_path = os.path.join(task_dir, f"{title}.{ext}")
     try:
         http_req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(http_req, timeout=60) as resp:
+        with _URL_OPENER.open(http_req, timeout=60) as resp:
             total = int(resp.headers.get("Content-Length") or 0)
             with _lock:
                 task = tasks.get(task_id)
@@ -1751,9 +2687,69 @@ def _finalize_images(task_id: str, task_dir: str, req: DownloadRequest) -> None:
     _save_output(task_id, task_dir, req, final_path, size, quality)
 
 
+def _finalize_playlist(task_id: str, task_dir: str, req: DownloadRequest) -> None:
+    """Move every downloaded playlist item into Downloads and log the batch."""
+    files = _find_output_files(task_dir)
+    if not files:
+        _fail_task(task_id, "No playlist items could be downloaded.")
+        return
+    saved: List[str] = []
+    total_bytes = 0
+    for path in files:
+        try:
+            size = os.path.getsize(path)
+            dest = _move_to_downloads(path)
+        except OSError:
+            continue
+        saved.append(os.path.basename(dest))
+        total_bytes += size
+    if not saved:
+        _fail_task(task_id, "Playlist items could not be saved to your Downloads folder.")
+        return
+
+    quality = ("Audio · " + (req.audio_format or "mp3").upper()) if req.audio_only \
+        else f"Playlist · {len(saved)} items"
+    with _lock:
+        task = tasks.get(task_id)
+        if task:
+            task["status"] = "completed"
+            task["percentage"] = 100.0
+            task["filename"] = saved[0]
+            task["file_size"] = total_bytes
+            task["file_size_str"] = format_bytes(total_bytes)
+            task["status_msg"] = f"Playlist complete — {len(saved)} files saved to your PC!"
+            task["playlist_saved"] = len(saved)
+        stats["downloads"] += len(saved)
+        stats["total_bytes"] += total_bytes
+        if not req.incognito:
+            history.insert(0, {
+                "task_id": task_id,
+                "title": (task or {}).get("title") or f"Playlist ({len(saved)} items)",
+                "filename": saved[0],
+                "filepath": os.path.join(DOWNLOADS_DIR, saved[0]),
+                "file_size_str": format_bytes(total_bytes),
+                "thumbnail": (task or {}).get("thumbnail", ""),
+                "kind": "playlist",
+                "audio_only": req.audio_only,
+                "quality": quality,
+                "source": (task or {}).get("source_label", ""),
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            })
+            history[:] = history[:50]
+            _record_download_day()
+    _persist_state()
+    try:
+        os.rmdir(task_dir)
+    except OSError:
+        pass
+
+
 def _finalize(task_id: str, task_dir: str, req: DownloadRequest) -> None:
     if req.kind in ("direct", "images"):
         _finalize_images(task_id, task_dir, req)
+        return
+    if req.kind == "playlist":
+        _finalize_playlist(task_id, task_dir, req)
         return
 
     file_path, file_size = _find_output_file(task_dir)
@@ -1774,7 +2770,7 @@ def start_download(req: DownloadRequest):
     if not url:
         raise HTTPException(status_code=400, detail="Paste a valid media link (https://…).")
 
-    if req.kind not in ("video", "audio", "direct", "images"):
+    if req.kind not in ("video", "audio", "direct", "images", "playlist"):
         raise HTTPException(status_code=400, detail="Unknown download kind.")
     if req.kind == "direct" and not (req.direct_url or "").startswith("http"):
         raise HTTPException(status_code=400, detail="No image URL supplied for this download.")
@@ -1916,6 +2912,12 @@ def health():
             "app": APP_NAME,
             "version": APP_VERSION,
             "ffmpeg": FFMPEG_EXE,
+            "ffmpeg_version": FFMPEG_VERSION,
+            "ffmpeg_available": FFMPEG_AVAILABLE,
+            "ytdlp_version": _ytdlp_version(),
+            "cookies_configured": COOKIES_CONFIGURED,
+            "proxy_configured": bool(PROXY_URL),
+            "sleep_interval": [SLEEP_INTERVAL, MAX_SLEEP_INTERVAL],
             "workers": MAX_WORKERS,
             "active_downloads": _active_download_count(),
             "history_count": len(history),

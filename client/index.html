@@ -94,7 +94,7 @@
                 <label class="field-label mono" for="urlInput">01 · MEDIA ADDRESS — VIDEOS, IMAGES, POSTS, PROFILES</label>
                 <div class="url-console">
                     <i class="fa-solid fa-link console-yt" aria-hidden="true"></i>
-                    <input type="text" id="urlInput" placeholder="https:// — YouTube, Instagram, X, LinkedIn, Pinterest, direct image…" autocomplete="off" spellcheck="false">
+                    <input type="text" id="urlInput" placeholder="Paste a link, page URL, embed &lt;iframe&gt;, or playlist…" autocomplete="off" spellcheck="false">
                     <div class="console-actions">
                         <button type="button" id="copyBtn" class="mini-btn hidden" title="Copy link"><i class="fa-solid fa-link"></i></button>
                         <button type="button" id="pasteBtn" class="mini-btn" title="Paste from clipboard"><i class="fa-solid fa-paste"></i></button>
@@ -384,6 +384,7 @@
                     <option value="safari">Safari</option>
                 </select>
                 <p class="setting-hint mono">USES YOUR LOGGED-IN SESSION FOR PRIVATE / LOGIN-WALLED POSTS (INSTAGRAM, X, FACEBOOK, LINKEDIN…) — NEVER LEAVES THIS MACHINE</p>
+                <p class="setting-hint mono">ON A DEPLOYED SERVER (RENDER) THIS CONTROL IS INERT — COOKIES ARE SUPPLIED SERVER-SIDE VIA A COOKIES.TXT SECRET (YTMAX_COOKIES_FILE). SEE docs/RENDER_DEPLOY.md</p>
             </div>
 
             <div class="setting-group">
